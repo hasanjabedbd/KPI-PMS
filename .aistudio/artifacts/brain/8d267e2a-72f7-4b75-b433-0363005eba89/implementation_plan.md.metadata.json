@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for HR Month-End Finalization Lock (locking Employee and Line Manager inputs for finalized months) and Yearly Average Performance & Best Employee Ranking Reports with a 12-month Jan-Dec breakdown table.",
+  "updatedAt":  "2026-10-30T13:17:25.291039495Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

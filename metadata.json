@@ -1,0 +1,6 @@
+{
+  "name": "KPI Ledger — Performance Management System",
+  "description": "Role-based KPI & Performance Management System with Organizational, Departmental, and Individual KPIs, KRA profiles, Daily Work Reports, and Executive Analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

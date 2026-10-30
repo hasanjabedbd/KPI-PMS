@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Account Setup — KPI Ledger</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    body {
+      background: linear-gradient(135deg, #0a1628 0%, #003066 50%, #0078d4 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .setup-box {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 6.4px 14.4px rgba(0,0,0,.2);
+      padding: 32px;
+      width: 100%;
+      max-width: 420px;
+    }
+    .setup-box h2 { font-size: 20px; margin-bottom: 6px; }
+    .setup-box p  { font-size: 13px; color: #605e5c; margin-bottom: 24px; }
+    .form-field   { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    label         { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #3b3a39; }
+    input, select { padding: 9px 12px; border: 1px solid #c8c6c4; border-radius: 4px; font-size: 14px; font-family: inherit; outline: none; }
+    input:focus, select:focus { border-color: #0078d4; box-shadow: 0 0 0 1px #0078d4; }
+    select        { background: #fff; cursor: pointer; }
+    .btn-submit   { width: 100%; background: #0078d4; color: #fff; border: none; border-radius: 4px; padding: 11px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 4px; }
+    .btn-submit:hover { background: #005a9e; }
+    .back-link    { display: block; text-align: center; margin-top: 18px; font-size: 13px; color: #0078d4; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .status       { font-size: 13px; line-height: 1.6; padding: 12px 14px; border-radius: 4px; margin-top: 14px; }
+    .status-success { background: #dff6dd; border: 1px solid #b3dfb1; color: #107c10; }
+    .status-error   { background: #fed9cc; border: 1px solid #f4b8b8; color: #a4262c; }
+    .status-info    { background: #eff6fc; border: 1px solid #c7e0f4; color: #005a9e; }
+  </style>
+</head>
+<body>
+  <div class="setup-box">
+    <h2>🔑 Account Setup</h2>
+    <p>Create a new user account. Use this page for initial setup or to provision additional HR/admin accounts.</p>
+
+    <div class="form-field">
+      <label>User ID</label>
+      <input id="userId" value="admin" />
+    </div>
+    <div class="form-field">
+      <label>Full Name</label>
+      <input id="userName" value="System Admin" />
+    </div>
+    <div class="form-field">
+      <label>Role</label>
+      <select id="userRole">
+        <option value="hr">HR — Full Access</option>
+        <option value="manager">Line Manager</option>
+        <option value="dept_head">Department Head</option>
+        <option value="employee">Employee</option>
+      </select>
+    </div>
+    <div class="form-field">
+      <label>Department</label>
+      <input id="dept" value="Human Resources" />
+    </div>
+    <div class="form-field">
+      <label>Password</label>
+      <input id="password" type="text" value="123456" />
+    </div>
+
+    <button class="btn-submit" onclick="createAccount()">Create Account</button>
+    <div id="status"></div>
+    <a class="back-link" href="index.html">← Back to Sign In</a>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { firebaseConfig, FAKE_EMAIL_DOMAIN } from "./js/firebase-config.js";
+
+    const app  = initializeApp(firebaseConfig, "SetupApp");
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    window.createAccount = async function () {
+      const uId  = document.getElementById("userId").value.trim().toLowerCase();
+      const name = document.getElementById("userName").value.trim();
+      const role = document.getElementById("userRole").value;
+      const dept = document.getElementById("dept").value.trim();
+      const pass = document.getElementById("password").value;
+      const el   = document.getElementById("status");
+
+      if (!uId || !pass) {
+        el.className = "status status-error";
+        el.textContent = "User ID and Password are required.";
+        return;
+      }
+
+      el.className = "status status-info";
+      el.textContent = "Creating account…";
+
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, uId + "@" + FAKE_EMAIL_DOMAIN, pass);
+        await setDoc(doc(db, "users", cred.user.uid), {
+          userId: uId,
+          name:   name || uId,
+          role,
+          dept:   dept || "General",
+          createdAt: new Date().toISOString()
+        });
+        el.className = "status status-success";
+        el.innerHTML = `✅ Account created successfully.<br><strong>User ID:</strong> ${uId} &nbsp;|&nbsp; <strong>Password:</strong> ${pass}<br><br><a href="index.html" style="color:#107c10;">Sign in →</a>`;
+      } catch (err) {
+        el.className = "status status-error";
+        if (err.code === "auth/email-already-in-use") {
+          el.innerHTML = `⚠️ The User ID <strong>${uId}</strong> is already registered.<br>Please choose a different User ID or reset the password via the Firebase Console.`;
+        } else {
+          el.textContent = "Error: " + err.message;
+        }
+      }
+    };
+  </script>
+</body>
+</html>

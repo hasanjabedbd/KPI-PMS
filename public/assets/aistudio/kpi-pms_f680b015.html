@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KPI Ledger — Team PMS</title>
+<style>
+  :root {
+    --ink: #16241F;
+    --ink-soft: #22352C;
+    --paper: #EFEAE0;
+    --paper-dim: #E3DCCC;
+    --brass: #B98A3D;
+    --brass-dim: #8C6A2E;
+    --moss: #4F6F52;
+    --rule-red: #8B3A3A;
+    --slate: #5B6B6F;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .ledger-font { font-family: Georgia, "Iowan Old Style", serif; }
+
+  /* ---------- Login screen ---------- */
+  #login-screen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--ink);
+    padding: 20px;
+  }
+  .login-box {
+    width: 100%;
+    max-width: 360px;
+  }
+  .login-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 24px;
+    color: var(--paper);
+    font-size: 22px;
+  }
+  .login-card {
+    background: var(--ink-soft);
+    border: 1px solid var(--brass-dim);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate);
+    margin-bottom: 4px;
+  }
+  input, select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 14px;
+    border: 1px solid var(--paper-dim);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    margin-bottom: 14px;
+    font-family: inherit;
+  }
+  .login-card input { color: var(--paper); }
+  button {
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
+    padding: 9px 16px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--brass); color: var(--ink); width: 100%; }
+  .btn-secondary { background: transparent; border: 1px solid var(--paper-dim); color: var(--ink); }
+  .btn-danger { background: transparent; border: 1px solid var(--rule-red); color: var(--rule-red); }
+  .error-text { color: #D98484; font-size: 13px; margin: -8px 0 12px; }
+  .success-text { color: var(--moss); font-size: 13px; }
+  .hint-box {
+    margin-top: 16px;
+    padding: 12px;
+    border: 1px solid var(--brass-dim);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--slate);
+  }
+  .hint-box strong { color: var(--brass); }
+
+  /* ---------- App shell ---------- */
+  #app-shell { display: none; min-height: 100vh; }
+  header {
+    background: var(--ink);
+    border-bottom: 1px solid var(--brass-dim);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  header .brand { display: flex; align-items: center; gap: 8px; color: var(--paper); font-size: 18px; }
+  header .who { text-align: right; color: var(--paper); font-size: 13px; }
+  .role-badge {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--brass);
+    border: 1px solid var(--brass-dim);
+    border-radius: 3px;
+    padding: 2px 6px;
+  }
+  nav {
+    display: flex;
+    gap: 6px;
+    padding: 16px 24px 0;
+    flex-wrap: wrap;
+  }
+  nav button {
+    background: transparent;
+    border: 1px solid var(--paper-dim);
+    color: var(--slate);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 13px;
+  }
+  nav button.active { background: var(--brass); color: var(--ink); border-color: var(--brass); }
+  main { max-width: 760px; margin: 0 auto; padding: 24px; }
+
+  .card {
+    background: rgba(255,255,255,0.6);
+    border: 1px solid var(--paper-dim);
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .form-card { border: 1px solid var(--paper-dim); border-radius: 6px; padding: 14px; }
+  .form-card input, .form-card select { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--paper-dim); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--slate); }
+  pre {
+    background: var(--ink);
+    color: #c9d4c9;
+    padding: 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+  .emp-card { border: 1px solid var(--paper-dim); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+  .emp-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; cursor: pointer; background: rgba(255,255,255,0.4);
+  }
+  .emp-head:hover { background: rgba(255,255,255,0.7); }
+  .emp-name { font-family: Georgia, serif; font-size: 15px; }
+  .emp-sub { font-size: 12px; color: var(--slate); }
+  .emp-body { padding: 14px; display: none; border-top: 1px solid var(--paper-dim); }
+  .emp-body.open { display: block; }
+  .profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 10px; }
+  .profile-grid div span { display: block; font-size: 11px; color: var(--slate); }
+  .profile-grid div strong { font-size: 13px; font-weight: normal; }
+  .kra-title { font-weight: bold; font-size: 13px; margin: 8px 0 2px; }
+  .kra-obj { font-size: 13px; color: var(--slate); margin: 2px 0 2px 16px; display: flex; justify-content: space-between; gap: 8px; }
+  .small-btn { font-size: 12px; padding: 4px 8px; }
+  .link-btn { background: none; border: none; color: var(--brass-dim); font-size: 13px; padding: 4px 0; text-decoration: underline; cursor: pointer; }
+  .x-btn { background: none; border: none; color: var(--rule-red); cursor: pointer; font-size: 13px; padding: 0 4px; }
+  .inline-row { display: flex; gap: 6px; margin: 6px 0; }
+  .inline-row input { margin-bottom: 0; }
+  .bar-track { height: 6px; border-radius: 3px; background: var(--paper-dim); margin-top: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN SCREEN ================= -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-title ledger-font">📖 KPI Ledger</div>
+    <div class="login-card">
+      <label>User ID</label>
+      <input id="login-userid" placeholder="e.g. rahim123" />
+      <label>Password</label>
+      <input id="login-password" type="password" placeholder="••••••••" />
+      <div id="login-error" class="error-text" style="display:none;"></div>
+      <button class="btn-primary" onclick="handleLogin()">Log in</button>
+    </div>
+    <div class="hint-box">
+      <strong>First time setup:</strong> ekhono kono account nei. HR-er jonno ekta seed account
+      Firebase Console theke ba nicher setup script diye banate hobe (niche instructions-e deya ache).
+    </div>
+  </div>
+</div>
+
+<!-- ================= APP SHELL ================= -->
+<div id="app-shell">
+  <header>
+    <div class="brand ledger-font">📖 KPI Ledger</div>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <div class="who">
+        <div id="who-name"></div>
+        <span id="who-role" class="role-badge"></span>
+      </div>
+      <button class="btn-secondary" onclick="handleLogout()">Log out</button>
+    </div>
+  </header>
+
+  <nav id="tab-nav"></nav>
+
+  <main>
+    <div id="panel-dashboard" class="tab-panel">
+      <h2 class="ledger-font" id="welcome-heading"></h2>
+      <p style="color:var(--slate); font-size:14px;">
+        Ei phase-e login, role routing ar HR-er employee account creation wire kora hoyeche.
+        KRA / KPI Library / Appraisal panel gula porer phase-e ei shell-er moddhei add hobe.
+      </p>
+    </div>
+
+    <div id="panel-org" class="tab-panel" style="display:none;">
+      <h2 class="ledger-font">Organizational KPIs</h2>
+      <div id="org-list"></div>
+    </div>
+
+    <div id="panel-dept" class="tab-panel" style="display:none;">
+      <div id="dept-list"></div>
+    </div>
+
+    <div id="panel-hr" class="tab-panel" style="display:none;">
+      <h2 class="ledger-font">Create employee account</h2>
+      <p style="color:var(--slate); font-size:13px; margin-top:-8px;">
+        Ei account create hobar shomoy apnar (HR-er) nijer login session touch hobe na — background-e
+        ekta second Firebase connection use kore notun account banano hoy, tarpor seta bondho kore deya hoy.
+      </p>
+      <div class="form-card">
+        <label>Full name</label>
+        <input id="new-name" placeholder="e.g. Nusrat Jahan" />
+        <label>User ID (login username)</label>
+        <input id="new-userid" placeholder="e.g. nusrat.jahan" />
+        <label>Temporary password</label>
+        <input id="new-password" placeholder="e.g. welcome123" />
+        <label>Role</label>
+        <select id="new-role" onchange="toggleNewEmployeeFields()">
+          <option value="employee">Employee</option>
+          <option value="manager">Line Manager</option>
+          <option value="dept_head">Department Head</option>
+          <option value="hr">HR</option>
+        </select>
+        <label>Department</label>
+        <input id="new-dept" placeholder="e.g. Sales" />
+
+        <div id="new-employee-fields">
+          <label>Employee ID</label>
+          <input id="new-empcode" placeholder="e.g. EMP-1001" />
+          <label>Job title</label>
+          <input id="new-title" placeholder="e.g. Sales Executive" />
+          <label>Factory</label>
+          <select id="new-factory">
+            <option>Corporate Office</option>
+            <option>Factory 1</option>
+            <option>Factory 2</option>
+          </select>
+          <label>Line manager</label>
+          <select id="new-manager"><option value="">Select line manager</option></select>
+          <label>Performance appraisal cycle</label>
+          <select id="new-cycle">
+            <option>Quarterly</option>
+            <option>Half-Yearly</option>
+            <option>Yearly</option>
+          </select>
+          <label>Purpose of role</label>
+          <textarea id="new-purpose" rows="2" placeholder="e.g. Drive sales revenue growth..."></textarea>
+        </div>
+
+        <div id="create-msg" style="margin-bottom:10px; font-size:13px;"></div>
+        <button class="btn-primary" onclick="handleCreateEmployee()">Create account</button>
+      </div>
+
+      <h3 class="ledger-font" style="margin-top:24px;">All accounts</h3>
+      <div id="employees-list"></div>
+    </div>
+
+    <div id="panel-team" class="tab-panel" style="display:none;">
+      <h2 class="ledger-font">My team</h2>
+      <div id="team-list"></div>
+    </div>
+
+    <div id="panel-profile" class="tab-panel" style="display:none;">
+      <h2 class="ledger-font">My role profile</h2>
+      <div id="my-profile-card"></div>
+    </div>
+
+    <div id="panel-mykpis" class="tab-panel" style="display:none;">
+      <h2 class="ledger-font">My KPIs</h2>
+      <div id="my-kpis-list"></div>
+    </div>
+  </main>
+</div>
+
+<!-- ================= FIREBASE WIRING ================= -->
+<script type="module">
+  import { initializeApp, getApps, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import {
+    getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+    createUserWithEmailAndPassword
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import {
+    getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, where
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  // ---------------------------------------------------------------
+  // 1) PASTE YOUR FIREBASE CONFIG HERE
+  //    (Firebase Console > Project settings > General > Your apps > SDK setup)
+  // ---------------------------------------------------------------
+  const firebaseConfig = {
+    apiKey: "AIzaSyDo4bjrqSDqbCCAaukusL92IAmMpd2KtY0",
+    authDomain: "pms-kpi.firebaseapp.com",
+    projectId: "pms-kpi",
+    storageBucket: "pms-kpi.firebasestorage.app",
+    messagingSenderId: "673875710142",
+    appId: "1:673875710142:web:89a482dc6b27c0b7e4ceef",
+    measurementId: "G-JXPJ0YNDHJ",
+  };
+  const FAKE_EMAIL_DOMAIN = "yourteam.local"; // change to anything, doesn't need to be real
+
+  const primaryApp = initializeApp(firebaseConfig);
+  const auth = getAuth(primaryApp);
+  const db = getFirestore(primaryApp);
+
+  function toFakeEmail(userId) {
+    return userId.trim().toLowerCase().replace(/\s+/g, "") + "@" + FAKE_EMAIL_DOMAIN;
+  }
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+  function escapeHtml(s) {
+    return (s || "").toString().replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  window.toggleNewEmployeeFields = function () {
+    const role = document.getElementById("new-role").value;
+    document.getElementById("new-employee-fields").style.display = role === "employee" ? "block" : "none";
+  };
+
+  let currentProfile = null; // { name, role, dept, userId }
+
+  // ---------------------------------------------------------------
+  // LOGIN
+  // ---------------------------------------------------------------
+  window.handleLogin = async function () {
+    const userId = document.getElementById("login-userid").value.trim();
+    const password = document.getElementById("login-password").value;
+    const errBox = document.getElementById("login-error");
+    errBox.style.display = "none";
+    if (!userId || !password) return;
+    try {
+      await signInWithEmailAndPassword(auth, toFakeEmail(userId), password);
+      // onAuthStateChanged below handles the rest
+    } catch (err) {
+      errBox.textContent = "User ID ba password mile nai.";
+      errBox.style.display = "block";
+    }
+  };
+
+  window.handleLogout = async function () {
+    await signOut(auth);
+  };
+
+  onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      document.getElementById("login-screen").style.display = "flex";
+      document.getElementById("app-shell").style.display = "none";
+      return;
+    }
+    const snap = await getDoc(doc(db, "users", user.uid));
+    if (!snap.exists()) {
+      alert("Login holo kintu Firestore-e profile pawa jaini. Firestore-e users/" + user.uid + " document create korte hobe.");
+      await signOut(auth);
+      return;
+    }
+    currentProfile = snap.data();
+    renderApp();
+  });
+
+  // ---------------------------------------------------------------
+  // ROLE-BASED ROUTING
+  // ---------------------------------------------------------------
+  const TABS_BY_ROLE = {
+    hr: [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "org", label: "Organizational" },
+      { id: "dept", label: "Departmental" },
+      { id: "hr", label: "Employee Accounts" },
+    ],
+    manager: [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "team", label: "My Team" },
+    ],
+    dept_head: [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "org", label: "Organizational" },
+      { id: "dept", label: "Departmental" },
+    ],
+    employee: [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "profile", label: "My Profile" },
+      { id: "mykpis", label: "My KPIs" },
+    ],
+  };
+
+  function renderApp() {
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app-shell").style.display = "block";
+    document.getElementById("who-name").textContent = currentProfile.name;
+    document.getElementById("who-role").textContent = currentProfile.role.toUpperCase();
+    document.getElementById("welcome-heading").textContent = "Welcome back, " + currentProfile.name.split(" ")[0];
+
+    const nav = document.getElementById("tab-nav");
+    nav.innerHTML = "";
+    const tabs = TABS_BY_ROLE[currentProfile.role] || TABS_BY_ROLE.employee;
+    tabs.forEach((t, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = t.label;
+      btn.className = i === 0 ? "active" : "";
+      btn.onclick = () => switchTab(t.id, btn);
+      nav.appendChild(btn);
+    });
+    switchTab(tabs[0].id);
+    if (currentProfile.role === "hr" || currentProfile.role === "dept_head") {
+      renderOrgPanel();
+      renderDeptPanel();
+    }
+    if (currentProfile.role === "hr") { loadManagersForSelect(); renderEmployeesList(); }
+    if (currentProfile.role === "manager") renderTeamList();
+    if (currentProfile.role === "employee") { renderMyProfile(); renderMyKpis(); }
+  }
+
+  function switchTab(tabId, btnEl) {
+    document.querySelectorAll(".tab-panel").forEach((el) => (el.style.display = "none"));
+    const panel = document.getElementById("panel-" + tabId);
+    if (panel) panel.style.display = "block";
+    document.querySelectorAll("#tab-nav button").forEach((b) => b.classList.remove("active"));
+    if (btnEl) btnEl.classList.add("active");
+  }
+
+  // ---------------------------------------------------------------
+  // HR: CREATE EMPLOYEE ACCOUNT (secondary-app trick so HR stays logged in)
+  // ---------------------------------------------------------------
+  window.handleCreateEmployee = async function () {
+    const name = document.getElementById("new-name").value.trim();
+    const userId = document.getElementById("new-userid").value.trim();
+    const password = document.getElementById("new-password").value;
+    const role = document.getElementById("new-role").value;
+    const dept = document.getElementById("new-dept").value.trim();
+    const msgBox = document.getElementById("create-msg");
+    msgBox.textContent = "";
+
+    if (!name || !userId || !password) {
+      msgBox.innerText = "Name, User ID, ar Password shob dorkar.";
+      return;
+    }
+
+    const extra = {};
+    if (role === "employee") {
+      extra.employeeCode = document.getElementById("new-empcode").value.trim();
+      extra.title = document.getElementById("new-title").value.trim();
+      extra.factory = document.getElementById("new-factory").value;
+      extra.managerUserId = document.getElementById("new-manager").value;
+      extra.appraisalCycle = document.getElementById("new-cycle").value;
+      extra.purpose = document.getElementById("new-purpose").value.trim();
+      extra.kras = [];
+      extra.lastUpdate = today();
+    }
+
+    // Clean up any leftover secondary app instance from a previous call
+    const existing = getApps().find((a) => a.name === "Secondary");
+    if (existing) await deleteApp(existing);
+
+    const secondaryApp = initializeApp(firebaseConfig, "Secondary");
+    const secondaryAuth = getAuth(secondaryApp);
+
+    try {
+      const cred = await createUserWithEmailAndPassword(secondaryAuth, toFakeEmail(userId), password);
+      await setDoc(doc(db, "users", cred.user.uid), {
+        name, role, dept, userId,
+        createdAt: new Date().toISOString(),
+        ...extra,
+      });
+      await signOut(secondaryAuth);
+      await deleteApp(secondaryApp);
+
+      msgBox.innerHTML = '<span class="success-text">Account created: ' + userId + " / " + password + "</span>";
+      document.getElementById("new-name").value = "";
+      document.getElementById("new-userid").value = "";
+      document.getElementById("new-password").value = "";
+      document.getElementById("new-dept").value = "";
+      document.getElementById("new-empcode").value = "";
+      document.getElementById("new-title").value = "";
+      document.getElementById("new-purpose").value = "";
+      loadManagersForSelect();
+      renderEmployeesList();
+    } catch (err) {
+      msgBox.textContent = "Error: " + err.message;
+      await deleteApp(secondaryApp);
+    }
+  };
+
+  // ---------------------------------------------------------------
+  // KPI SCORING HELPERS
+  // ---------------------------------------------------------------
+  function kpiPercent(k) {
+    const raw = k.lowerIsBetter ? (k.target / Math.max(k.current, 0.0001)) * 100 : (k.current / k.target) * 100;
+    return Math.max(0, Math.min(120, raw));
+  }
+  function statusColor(pct) {
+    if (pct >= 100) return "var(--moss)";
+    if (pct >= 75) return "var(--brass)";
+    return "var(--rule-red)";
+  }
+  function statusLabel(pct) {
+    if (pct >= 100) return "On Target";
+    if (pct >= 75) return "On Track";
+    return "At Risk";
+  }
+  function weightedScore(kpis) {
+    if (!kpis || kpis.length === 0) return 0;
+    const totalWeight = kpis.reduce((s, k) => s + Number(k.weight), 0) || 1;
+    const weighted = kpis.reduce((s, k) => s + kpiPercent(k) * Number(k.weight), 0);
+    return Math.round(weighted / totalWeight);
+  }
+  function fmtVal(n, unit) {
+    if (unit === "BDT") return "৳" + Number(n).toLocaleString("en-IN");
+    return `${n}${unit === "%" ? "%" : " " + unit}`;
+  }
+  function kpiRowHtml(prefix, k, canEdit) {
+    const pct = kpiPercent(k);
+    const color = statusColor(pct);
+    return `
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:160px;">
+            <p style="font-size:14px;margin:0;">${escapeHtml(k.title)}</p>
+            <p class="mono" style="font-size:12px;color:var(--slate);margin:2px 0 0;">${fmtVal(k.current, k.unit)} / ${fmtVal(k.target, k.unit)} · weight ${k.weight}%</p>
+          </div>
+          <span class="role-badge" style="color:${color};border-color:${color};">${Math.round(pct)}% · ${statusLabel(pct)}</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(pct, 100)}%;background:${color};"></div></div>
+        ${canEdit ? `<div class="inline-row" style="margin-top:8px;"><input type="number" id="${prefix}-cur-${k.id}" value="${k.current}" style="flex:1;" /><button class="btn-secondary small-btn" onclick="${prefix === "org" ? "updateOrgCurrent" : "updateDeptCurrent"}('${k.id}')">Update</button></div>` : ""}
+      </div>`;
+  }
+
+  // ---------------------------------------------------------------
+  // ORGANIZATIONAL KPIs (collection "orgKpis", single doc "main")
+  // ---------------------------------------------------------------
+  let orgKpisCache = [];
+  async function renderOrgPanel() {
+    const container = document.getElementById("org-list");
+    if (!container) return;
+    container.innerHTML = "Loading…";
+    const snap = await getDoc(doc(db, "orgKpis", "main"));
+    orgKpisCache = snap.exists() ? snap.data().kpis || [] : [];
+    const score = weightedScore(orgKpisCache);
+    const canEdit = currentProfile.role === "hr";
+    let html = `<div class="card"><p class="mono" style="font-size:22px;margin:0;">${score}%</p><p style="font-size:12px;color:var(--slate);margin:0;">Organizational score</p></div>`;
+    orgKpisCache.forEach((k) => (html += kpiRowHtml("org", k, canEdit)));
+    if (orgKpisCache.length === 0) html += '<p style="font-size:13px;color:var(--slate);">Kono organizational KPI ekhono add kora hoyni.</p>';
+    if (canEdit) {
+      html += `<div class="form-card" style="margin-top:10px;">
+        <label>KPI title</label><input id="org-new-title" />
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div><label>Target</label><input type="number" id="org-new-target" /></div>
+          <div><label>Current</label><input type="number" id="org-new-current" value="0" /></div>
+          <div><label>Unit</label><select id="org-new-unit"><option value="%">%</option><option value="BDT">BDT</option><option value="hrs">hrs</option><option value="number">number</option></select></div>
+          <div><label>Weight %</label><input type="number" id="org-new-weight" /></div>
+        </div>
+        <button class="btn-primary" style="width:auto;" onclick="addOrgKpi()">Add organizational KPI</button>
+      </div>`;
+    }
+    container.innerHTML = html;
+  }
+  window.updateOrgCurrent = async function (kpiId) {
+    const val = Number(document.getElementById("org-cur-" + kpiId).value);
+    orgKpisCache = orgKpisCache.map((k) => (k.id === kpiId ? { ...k, current: val } : k));
+    await setDoc(doc(db, "orgKpis", "main"), { kpis: orgKpisCache });
+    renderOrgPanel();
+  };
+  window.addOrgKpi = async function () {
+    const title = document.getElementById("org-new-title").value.trim();
+    const target = Number(document.getElementById("org-new-target").value);
+    const current = Number(document.getElementById("org-new-current").value) || 0;
+    const unit = document.getElementById("org-new-unit").value;
+    const weight = Number(document.getElementById("org-new-weight").value);
+    if (!title || !target || !weight) return;
+    orgKpisCache = [...orgKpisCache, { id: "o" + Math.random().toString(36).slice(2, 8), title, target, current, unit, weight }];
+    await setDoc(doc(db, "orgKpis", "main"), { kpis: orgKpisCache });
+    renderOrgPanel();
+  };
+
+  // ---------------------------------------------------------------
+  // DEPARTMENTAL KPIs (collection "deptKpis", one doc per department)
+  // ---------------------------------------------------------------
+  let currentDept = null;
+  let deptKpisCache = [];
+  let deptListCache = [];
+
+  function newDeptFormHtml() {
+    return `<div class="form-card" style="margin-top:10px;">
+      <label>Create new department</label>
+      <div class="inline-row"><input id="new-dept-name" placeholder="e.g. Marketing" style="flex:1;" /><button class="btn-secondary small-btn" onclick="createDepartment()">Create</button></div>
+    </div>`;
+  }
+
+  async function renderDeptPanel() {
+    const container = document.getElementById("dept-list");
+    if (!container) return;
+    container.innerHTML = "Loading…";
+    const snap = await getDocs(collection(db, "deptKpis"));
+    deptListCache = [];
+    snap.forEach((d) => deptListCache.push(d.id));
+
+    if (currentProfile.role === "hr" || currentProfile.role === "dept_head") {
+      if (!currentDept || !deptListCache.includes(currentDept)) currentDept = currentProfile.dept && deptListCache.includes(currentProfile.dept) ? currentProfile.dept : deptListCache[0] || null;
+    } else {
+      currentDept = currentProfile.dept || null;
+    }
+
+    let selectorHtml = "";
+    if ((currentProfile.role === "hr" || currentProfile.role === "dept_head") && deptListCache.length > 0) {
+      selectorHtml = `<select id="dept-select" onchange="switchDept(this.value)" style="width:auto;margin-bottom:0;">` +
+        deptListCache.map((d) => `<option value="${escapeHtml(d)}" ${d === currentDept ? "selected" : ""}>${escapeHtml(d)}</option>`).join("") +
+        `</select>`;
+    }
+
+    let html = `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+        <h2 class="ledger-font" style="margin:0;">${currentDept ? escapeHtml(currentDept) + " department" : "Departmental KPIs"}</h2>
+        ${selectorHtml}
+      </div>`;
+
+    if (!currentDept) {
+      html += '<p style="font-size:13px;color:var(--slate);">Kono department ekhono nei.</p>';
+      if (currentProfile.role === "hr") html += newDeptFormHtml();
+      container.innerHTML = html;
+      return;
+    }
+
+    const dsnap = await getDoc(doc(db, "deptKpis", currentDept));
+    deptKpisCache = dsnap.exists() ? dsnap.data().kpis || [] : [];
+    const score = weightedScore(deptKpisCache);
+    const canEditValues = currentProfile.role === "hr" || (currentProfile.role === "dept_head" && currentProfile.dept === currentDept);
+    const canAdd = currentProfile.role === "hr";
+
+    html += `<div class="card"><p class="mono" style="font-size:22px;margin:0;">${score}%</p><p style="font-size:12px;color:var(--slate);margin:0;">Department score</p></div>`;
+    deptKpisCache.forEach((k) => (html += kpiRowHtml("dept", k, canEditValues)));
+    if (deptKpisCache.length === 0) html += '<p style="font-size:13px;color:var(--slate);">Kono KPI ekhono add kora hoyni.</p>';
+
+    if (canAdd) {
+      html += `<div class="form-card" style="margin-top:10px;">
+        <label>KPI title</label><input id="dept-new-title" />
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div><label>Target</label><input type="number" id="dept-new-target" /></div>
+          <div><label>Current</label><input type="number" id="dept-new-current" value="0" /></div>
+          <div><label>Unit</label><select id="dept-new-unit"><option value="%">%</option><option value="BDT">BDT</option><option value="hrs">hrs</option><option value="number">number</option></select></div>
+          <div><label>Weight %</label><input type="number" id="dept-new-weight" /></div>
+        </div>
+        <button class="btn-primary" style="width:auto;" onclick="addDeptKpi()">Add departmental KPI</button>
+      </div>
+      ${newDeptFormHtml()}`;
+    }
+    container.innerHTML = html;
+  }
+
+  window.switchDept = function (name) {
+    currentDept = name;
+    renderDeptPanel();
+  };
+  window.createDepartment = async function () {
+    const name = document.getElementById("new-dept-name").value.trim();
+    if (!name) return;
+    await setDoc(doc(db, "deptKpis", name), { kpis: [] });
+    currentDept = name;
+    renderDeptPanel();
+  };
+  window.updateDeptCurrent = async function (kpiId) {
+    const val = Number(document.getElementById("dept-cur-" + kpiId).value);
+    deptKpisCache = deptKpisCache.map((k) => (k.id === kpiId ? { ...k, current: val } : k));
+    await setDoc(doc(db, "deptKpis", currentDept), { kpis: deptKpisCache });
+    renderDeptPanel();
+  };
+  window.addDeptKpi = async function () {
+    const title = document.getElementById("dept-new-title").value.trim();
+    const target = Number(document.getElementById("dept-new-target").value);
+    const current = Number(document.getElementById("dept-new-current").value) || 0;
+    const unit = document.getElementById("dept-new-unit").value;
+    const weight = Number(document.getElementById("dept-new-weight").value);
+    if (!title || !target || !weight) return;
+    deptKpisCache = [...deptKpisCache, { id: "d" + Math.random().toString(36).slice(2, 8), title, target, current, unit, weight }];
+    await setDoc(doc(db, "deptKpis", currentDept), { kpis: deptKpisCache });
+    renderDeptPanel();
+  };
+
+  // ---------------------------------------------------------------
+  // MANAGER SELECT (for the create-account form)
+  // ---------------------------------------------------------------
+  async function loadManagersForSelect() {
+    const sel = document.getElementById("new-manager");
+    sel.innerHTML = '<option value="">Select line manager</option>';
+    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "manager")));
+    snap.forEach((d) => {
+      const u = d.data();
+      const opt = document.createElement("option");
+      opt.value = u.userId;
+      opt.textContent = u.name + " (" + u.userId + ")";
+      sel.appendChild(opt);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // PROFILE CARD + KRA RENDERING (shared by HR / Manager / Employee views)
+  // ---------------------------------------------------------------
+  function profileCardHtml(u) {
+    if (u.role !== "employee") {
+      return '<div class="card"><span style="font-size:12px;color:var(--slate);">Role profile fields apply to employee accounts only.</span></div>';
+    }
+    return `
+      <div class="card">
+        <div class="profile-grid">
+          <div><span>Employee ID</span><strong>${escapeHtml(u.employeeCode) || "—"}</strong></div>
+          <div><span>Department</span><strong>${escapeHtml(u.dept) || "—"}</strong></div>
+          <div><span>Factory</span><strong>${escapeHtml(u.factory) || "—"}</strong></div>
+          <div><span>Line Manager</span><strong>${escapeHtml(u.managerUserId) || "—"}</strong></div>
+          <div><span>Appraisal Cycle</span><strong>${escapeHtml(u.appraisalCycle) || "—"}</strong></div>
+          <div><span>Last Updated</span><strong>${escapeHtml(u.lastUpdate) || "—"}</strong></div>
+        </div>
+        <span style="font-size:11px;color:var(--slate);">Purpose of role</span>
+        <p style="font-size:13px;margin:2px 0 0;">${escapeHtml(u.purpose) || "—"}</p>
+      </div>`;
+  }
+
+  function kraSectionHtml(u, canEdit) {
+    const kras = u.kras || [];
+    let html = '<div class="card"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--slate);">KRA-based role description</span>';
+    if (kras.length === 0) html += '<p style="font-size:13px;color:var(--slate);margin-top:6px;">No KRAs defined yet.</p>';
+    kras.forEach((k, ki) => {
+      html += `<div class="kra-title">${ki + 1}. ${escapeHtml(k.title)} ${canEdit ? `<button class="x-btn" onclick="removeKra('${u._uid}','${k.id}')">Remove</button>` : ""}</div>`;
+      (k.objectives || []).forEach((o, oi) => {
+        html += `<div class="kra-obj"><span>${ki + 1}${String.fromCharCode(97 + oi)}. ${escapeHtml(o.text)}</span> ${canEdit ? `<button class="x-btn" onclick="removeObjective('${u._uid}','${k.id}','${o.id}')">×</button>` : ""}</div>`;
+      });
+      if (canEdit) {
+        html += `<div class="inline-row" style="margin-left:16px;">
+          <input id="obj-input-${u._uid}-${k.id}" placeholder="Add objective/activity" style="flex:1;" />
+          <button class="btn-secondary small-btn" onclick="addObjective('${u._uid}','${k.id}')">Add</button>
+        </div>`;
+      }
+    });
+    if (canEdit) {
+      html += `<div class="inline-row" style="margin-top:10px;">
+        <input id="kra-input-${u._uid}" placeholder="New KRA title" style="flex:1;" />
+        <button class="btn-secondary small-btn" onclick="addKra('${u._uid}')">Add KRA</button>
+      </div>`;
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function kpiSectionHtml(u, canManage) {
+    const kpis = u.kpis || [];
+    let html = '<div class="card"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--slate);">Individual KPIs</span>';
+    if (kpis.length === 0) html += '<p style="font-size:13px;color:var(--slate);margin-top:6px;">Kono KPI assign kora hoyni.</p>';
+    kpis.forEach((k) => {
+      const pct = kpiPercent(k);
+      const color = statusColor(pct);
+      html += `<div style="margin-top:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div><p style="font-size:13px;margin:0;">${escapeHtml(k.title)}</p><p class="mono" style="font-size:11px;color:var(--slate);margin:2px 0 0;">${fmtVal(k.current, k.unit)} / ${fmtVal(k.target, k.unit)} · weight ${k.weight}%</p></div>
+          <span class="role-badge" style="color:${color};border-color:${color};">${Math.round(pct)}%</span>
+          ${canManage ? `<button class="x-btn" onclick="removeKpi('${u._uid}','${k.id}')">Remove</button>` : ""}
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(pct, 100)}%;background:${color};"></div></div>
+      </div>`;
+    });
+    if (canManage) {
+      html += `<div class="form-card" style="margin-top:10px;">
+        <label>KPI title</label><input id="kpi-new-title-${u._uid}" />
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div><label>Target</label><input type="number" id="kpi-new-target-${u._uid}" /></div>
+          <div><label>Unit</label><select id="kpi-new-unit-${u._uid}"><option value="%">%</option><option value="BDT">BDT</option><option value="hrs">hrs</option><option value="number">number</option><option value="clients">clients</option></select></div>
+          <div><label>Weight %</label><input type="number" id="kpi-new-weight-${u._uid}" /></div>
+        </div>
+        <button class="btn-primary" style="width:auto;" onclick="addKpiToEmployee('${u._uid}')">Add KPI</button>
+      </div>`;
+    }
+    html += "</div>";
+    return html;
+  }
+  window.addKpiToEmployee = async function (uid) {
+    const title = document.getElementById("kpi-new-title-" + uid).value.trim();
+    const target = Number(document.getElementById("kpi-new-target-" + uid).value);
+    const unit = document.getElementById("kpi-new-unit-" + uid).value;
+    const weight = Number(document.getElementById("kpi-new-weight-" + uid).value);
+    if (!title || !target || !weight) return;
+    const kpis = [...(empCache[uid].kpis || []), { id: "k" + Math.random().toString(36).slice(2, 8), title, target, current: 0, unit, weight }];
+    await updateDoc(doc(db, "users", uid), { kpis });
+    empCache[uid].kpis = kpis;
+    renderEmpBody(uid);
+    document.getElementById("emp-body-" + uid).classList.add("open");
+  };
+  window.removeKpi = async function (uid, kpiId) {
+    const kpis = (empCache[uid].kpis || []).filter((k) => k.id !== kpiId);
+    await updateDoc(doc(db, "users", uid), { kpis });
+    empCache[uid].kpis = kpis;
+    renderEmpBody(uid);
+    document.getElementById("emp-body-" + uid).classList.add("open");
+  };
+
+  // ---------------------------------------------------------------
+  // SHARED: EMPLOYEE-DETAIL CARDS (used by HR Employee Accounts + Manager My Team)
+  // ---------------------------------------------------------------
+  let empCache = {};
+  let empOpts = {};
+
+  function empCardHtml(uid, u) {
+    return `
+      <div class="emp-card">
+        <div class="emp-head" onclick="toggleEmpRow('${uid}')">
+          <div><div class="emp-name">${escapeHtml(u.name)}</div><div class="emp-sub">${escapeHtml(u.title || u.role)} · ${escapeHtml(u.dept || "")}</div></div>
+          <span class="role-badge" style="color:var(--brass-dim);border-color:var(--brass-dim);">${u.role.toUpperCase()}</span>
+        </div>
+        <div class="emp-body" id="emp-body-${uid}"></div>
+      </div>`;
+  }
+
+  async function renderEmployeesList() {
+    const container = document.getElementById("employees-list");
+    container.innerHTML = "Loading…";
+    const snap = await getDocs(collection(db, "users"));
+    let html = "";
+    snap.forEach((d) => {
+      const u = { ...d.data(), _uid: d.id };
+      empCache[d.id] = u;
+      empOpts[d.id] = { canEditProfile: true, canDelete: true, canManageKpis: u.role === "employee" };
+      html += empCardHtml(d.id, u);
+    });
+    container.innerHTML = html || '<p style="font-size:13px;color:var(--slate);">Kono account nei.</p>';
+  }
+
+  async function renderTeamList() {
+    const container = document.getElementById("team-list");
+    container.innerHTML = "Loading…";
+    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "employee"), where("managerUserId", "==", currentProfile.userId)));
+    let html = "";
+    snap.forEach((d) => {
+      const u = { ...d.data(), _uid: d.id };
+      empCache[d.id] = u;
+      empOpts[d.id] = { canEditProfile: true, canDelete: false, canManageKpis: true };
+      html += empCardHtml(d.id, u);
+    });
+    container.innerHTML = html || '<p style="font-size:13px;color:var(--slate);">Kono team member ekhono assign kora hoyni.</p>';
+  }
+
+  window.toggleEmpRow = function (uid) {
+    const body = document.getElementById("emp-body-" + uid);
+    const isOpen = body.classList.contains("open");
+    document.querySelectorAll(".emp-body").forEach((b) => b.classList.remove("open"));
+    if (!isOpen) {
+      body.classList.add("open");
+      renderEmpBody(uid);
+    }
+  };
+
+  function renderEmpBody(uid) {
+    const u = empCache[uid];
+    const opts = empOpts[uid] || {};
+    const body = document.getElementById("emp-body-" + uid);
+    let btns = "";
+    if (opts.canEditProfile && u.role === "employee") btns += `<button class="link-btn" onclick="startEditProfile('${uid}')">Edit profile</button>`;
+    if (opts.canDelete) btns += `<button class="link-btn" style="color:var(--rule-red);margin-left:12px;" onclick="deleteEmployeeAccount('${uid}')">Delete account</button>`;
+    body.innerHTML = `
+      ${btns}
+      <div id="profile-view-${uid}">${profileCardHtml(u)}</div>
+      <div id="profile-edit-${uid}"></div>
+      ${kraSectionHtml(u, opts.canEditProfile && u.role === "employee")}
+      ${u.role === "employee" ? kpiSectionHtml(u, opts.canManageKpis) : ""}
+    `;
+  }
+
+  window.deleteEmployeeAccount = async function (uid) {
+    const u = empCache[uid];
+    const ok = confirm("Sure apni '" + u.name + "' er account delete korte chan? Firestore-er profile data delete hobe, kintu login credential (Firebase Authentication) alada vabe delete korte hobe Firebase Console theke (client-side theke onno user-er auth account delete kora jay na).");
+    if (!ok) return;
+    await deleteDoc(doc(db, "users", uid));
+    delete empCache[uid];
+    renderEmployeesList();
+  };
+
+  window.startEditProfile = async function (uid) {
+    const u = empCache[uid];
+    if (u.role !== "employee") return;
+    document.getElementById("profile-view-" + uid).style.display = "none";
+    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "manager")));
+    let managerOptions = '<option value="">Select line manager</option>';
+    snap.forEach((d) => {
+      const m = d.data();
+      const sel = m.userId === u.managerUserId ? "selected" : "";
+      managerOptions += `<option value="${escapeHtml(m.userId)}" ${sel}>${escapeHtml(m.name)} (${escapeHtml(m.userId)})</option>`;
+    });
+    const cycles = ["Quarterly", "Half-Yearly", "Yearly"];
+    let cycleOptions = "";
+    cycles.forEach((c) => {
+      cycleOptions += `<option value="${c}" ${c === u.appraisalCycle ? "selected" : ""}>${c}</option>`;
+    });
+    document.getElementById("profile-edit-" + uid).innerHTML = `
+      <div class="form-card">
+        <label>Employee ID</label><input id="edit-empcode-${uid}" value="${escapeHtml(u.employeeCode)}" />
+        <label>Job title</label><input id="edit-title-${uid}" value="${escapeHtml(u.title)}" />
+        <label>Department</label><input id="edit-dept-${uid}" value="${escapeHtml(u.dept)}" />
+        <label>Factory</label><input id="edit-factory-${uid}" value="${escapeHtml(u.factory)}" />
+        <label>Line manager</label><select id="edit-manager-${uid}">${managerOptions}</select>
+        <label>Appraisal cycle</label><select id="edit-cycle-${uid}">${cycleOptions}</select>
+        <label>Purpose of role</label><textarea id="edit-purpose-${uid}" rows="2">${escapeHtml(u.purpose)}</textarea>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-primary" style="width:auto;" onclick="saveProfileEdit('${uid}')">Save</button>
+          <button class="btn-secondary" onclick="cancelEditProfile('${uid}')">Cancel</button>
+        </div>
+      </div>`;
+  };
+
+  window.cancelEditProfile = function (uid) {
+    document.getElementById("profile-view-" + uid).style.display = "block";
+    document.getElementById("profile-edit-" + uid).innerHTML = "";
+  };
+
+  window.saveProfileEdit = async function (uid) {
+    const updates = {
+      employeeCode: document.getElementById("edit-empcode-" + uid).value.trim(),
+      title: document.getElementById("edit-title-" + uid).value.trim(),
+      dept: document.getElementById("edit-dept-" + uid).value.trim(),
+      factory: document.getElementById("edit-factory-" + uid).value.trim(),
+      managerUserId: document.getElementById("edit-manager-" + uid).value,
+      appraisalCycle: document.getElementById("edit-cycle-" + uid).value,
+      purpose: document.getElementById("edit-purpose-" + uid).value.trim(),
+      lastUpdate: today(),
+    };
+    await updateDoc(doc(db, "users", uid), updates);
+    Object.assign(empCache[uid], updates);
+    document.getElementById("profile-view-" + uid).style.display = "block";
+    document.getElementById("profile-edit-" + uid).innerHTML = "";
+    document.getElementById("profile-view-" + uid).innerHTML = profileCardHtml(empCache[uid]);
+  };
+
+  // ---------------------------------------------------------------
+  // KRA MUTATIONS
+  // ---------------------------------------------------------------
+  async function saveKras(uid, kras) {
+    await updateDoc(doc(db, "users", uid), { kras, lastUpdate: today() });
+    empCache[uid].kras = kras;
+    empCache[uid].lastUpdate = today();
+    renderEmpBody(uid);
+    document.getElementById("emp-body-" + uid).classList.add("open");
+  }
+  window.addKra = function (uid) {
+    const input = document.getElementById("kra-input-" + uid);
+    const title = input.value.trim();
+    if (!title) return;
+    const kras = [...(empCache[uid].kras || []), { id: "kra" + Math.random().toString(36).slice(2, 8), title, objectives: [] }];
+    saveKras(uid, kras);
+  };
+  window.removeKra = function (uid, kraId) {
+    const kras = (empCache[uid].kras || []).filter((k) => k.id !== kraId);
+    saveKras(uid, kras);
+  };
+  window.addObjective = function (uid, kraId) {
+    const input = document.getElementById("obj-input-" + uid + "-" + kraId);
+    const text = input.value.trim();
+    if (!text) return;
+    const kras = (empCache[uid].kras || []).map((k) =>
+      k.id === kraId ? { ...k, objectives: [...(k.objectives || []), { id: "ob" + Math.random().toString(36).slice(2, 8), text }] } : k
+    );
+    saveKras(uid, kras);
+  };
+  window.removeObjective = function (uid, kraId, obId) {
+    const kras = (empCache[uid].kras || []).map((k) =>
+      k.id === kraId ? { ...k, objectives: (k.objectives || []).filter((o) => o.id !== obId) } : k
+    );
+    saveKras(uid, kras);
+  };
+
+  // ---------------------------------------------------------------
+  // EMPLOYEE: MY PROFILE (read-only)
+  // ---------------------------------------------------------------
+  function renderMyProfile() {
+    const u = { ...currentProfile, _uid: auth.currentUser.uid };
+    document.getElementById("my-profile-card").innerHTML = profileCardHtml(u) + kraSectionHtml(u, false);
+  }
+
+  // ---------------------------------------------------------------
+  // EMPLOYEE: MY KPIS (can only update the achievement/current value)
+  // ---------------------------------------------------------------
+  function renderMyKpis() {
+    const kpis = currentProfile.kpis || [];
+    const container = document.getElementById("my-kpis-list");
+    if (kpis.length === 0) {
+      container.innerHTML = '<p style="font-size:13px;color:var(--slate);">Kono KPI ekhono assign kora hoyni. Line Manager-ke bolun assign korte.</p>';
+      return;
+    }
+    let html = "";
+    kpis.forEach((k) => {
+      const pct = kpiPercent(k);
+      const color = statusColor(pct);
+      html += `<div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div><p style="font-size:14px;margin:0;">${escapeHtml(k.title)}</p><p class="mono" style="font-size:12px;color:var(--slate);margin:2px 0 0;">Target: ${fmtVal(k.target, k.unit)} · weight ${k.weight}%</p></div>
+          <span class="role-badge" style="color:${color};border-color:${color};">${Math.round(pct)}% · ${statusLabel(pct)}</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(pct, 100)}%;background:${color};"></div></div>
+        <div class="inline-row" style="margin-top:8px;">
+          <input type="number" id="my-kpi-cur-${k.id}" value="${k.current}" style="flex:1;" />
+          <button class="btn-primary" style="width:auto;" onclick="updateMyKpi('${k.id}')">Update achievement</button>
+        </div>
+      </div>`;
+    });
+    container.innerHTML = html;
+  }
+  window.updateMyKpi = async function (kpiId) {
+    const val = Number(document.getElementById("my-kpi-cur-" + kpiId).value);
+    const kpis = (currentProfile.kpis || []).map((k) => (k.id === kpiId ? { ...k, current: val } : k));
+    await updateDoc(doc(db, "users", auth.currentUser.uid), { kpis });
+    currentProfile.kpis = kpis;
+    renderMyKpis();
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KPI Ledger — Performance Management System</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- Chart.js for executive analytics & performance charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- html2pdf.js bundle with jspdf and html2canvas -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="login-logo-icon">📊</div>
+      <div class="login-logo-text">
+        <span class="product-name">KPI Ledger</span>
+        <span class="product-sub">Performance Management System</span>
+      </div>
+    </div>
+    <div class="login-card">
+      <h3>Sign in to your account</h3>
+      <div class="form-row">
+        <label for="login-userid">User ID</label>
+        <input id="login-userid" autocomplete="username" />
+      </div>
+      <div class="form-row">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password" />
+      </div>
+      <div id="login-error" class="error-text" style="display:none;"></div>
+      <button class="btn-primary" onclick="handleLogin()">Sign In</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= APP SHELL ================= -->
+<div id="app-shell">
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">📊</div>
+      KPI Ledger
+    </div>
+    <div class="header-right">
+      <div class="who">
+        <div class="who-name" id="who-name"></div>
+        <span id="who-role"></span>
+      </div>
+      <button class="btn-logout" onclick="handleLogout()">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="subnav-bar" id="tab-nav"></div>
+
+  <main>
+
+    <!-- DASHBOARD -->
+    <div id="panel-dashboard" class="tab-panel">
+      <div class="welcome-strip">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div>
+            <h2 id="welcome-heading"></h2>
+            <p>Welcome to KPI Ledger — your centralized Performance Management System.</p>
+          </div>
+          <div id="dashboard-header-actions"></div>
+        </div>
+      </div>
+      <div id="dashboard-stats" class="stat-grid"></div>
+      <div id="dashboard-content" style="margin-top: 24px;"></div>
+    </div>
+
+    <!-- ORGANIZATIONAL KPIs -->
+    <div id="panel-org" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Organizational KPIs</div>
+          <div class="page-sub">Company-wide key performance indicators</div>
+        </div>
+      </div>
+      <div id="org-list"></div>
+    </div>
+
+    <!-- DEPARTMENTAL KPIs -->
+    <div id="panel-dept" class="tab-panel" style="display:none;">
+      <div id="dept-list"></div>
+    </div>
+
+    <!-- HR: EMPLOYEE ACCOUNTS -->
+    <div id="panel-hr" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Employee Accounts</div>
+          <div class="page-sub">Create and manage user accounts across all roles</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Create New Account</div>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Full Name</label>
+            <input id="new-name" />
+          </div>
+          <div class="form-field">
+            <label>User ID</label>
+            <input id="new-userid" />
+          </div>
+          <div class="form-field">
+            <label>Temporary Password</label>
+            <input id="new-password" />
+          </div>
+          <div class="form-field">
+            <label>Role</label>
+            <select id="new-role" onchange="toggleNewEmployeeFields()">
+              <option value="employee">Employee</option>
+              <option value="manager">Line Manager</option>
+              <option value="dept_head">Department Head</option>
+              <option value="hr">HR</option>
+            </select>
+          </div>
+          <div class="form-field" style="grid-column: 1 / -1;">
+            <label>Department</label>
+            <input id="new-dept" />
+          </div>
+        </div>
+
+        <div id="new-employee-fields">
+          <div class="section-divider"></div>
+          <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--text-secondary); margin-bottom:12px;">Employee Details</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>Employee ID</label>
+              <input id="new-empcode" />
+            </div>
+            <div class="form-field">
+              <label>Job Title</label>
+              <input id="new-title" />
+            </div>
+            <div class="form-field">
+              <label>Factory / Office</label>
+              <select id="new-factory">
+                <option>Corporate Office</option>
+                <option>Factory 1</option>
+                <option>Factory 2</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label>Line Manager</label>
+              <select id="new-manager"><option value="">— Select —</option></select>
+            </div>
+            <div class="form-field">
+              <label>Appraisal Cycle</label>
+              <select id="new-cycle">
+                <option>Monthly</option>
+                <option>Quarterly</option>
+                <option>Half-Yearly</option>
+                <option>Yearly</option>
+              </select>
+            </div>
+            <div class="form-field" style="grid-column: 1 / -1;">
+              <label>Purpose of Role</label>
+              <textarea id="new-purpose" rows="2"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div id="create-msg" style="margin:12px 0; font-size:13px;"></div>
+        <button class="btn-primary" style="width:auto; padding:10px 24px;" onclick="handleCreateEmployee()">Create Account</button>
+      </div>
+
+      <div style="margin-top:28px;">
+        <div class="page-header">
+          <div><div class="page-title" style="font-size:16px;">All Accounts</div></div>
+        </div>
+        <div id="employees-list"></div>
+      </div>
+    </div>
+
+    <!-- MANAGER: MY TEAM -->
+    <div id="panel-team" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">My Team</div>
+          <div class="page-sub">Direct reports and their performance overview</div>
+        </div>
+      </div>
+      <div id="team-list"></div>
+    </div>
+
+    <!-- EMPLOYEE: PROFILE -->
+    <div id="panel-profile" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">My Role Profile</div>
+          <div class="page-sub">Your job details, key result areas and objectives</div>
+        </div>
+      </div>
+      <div id="my-profile-card"></div>
+    </div>
+
+    <!-- EMPLOYEE: MY KPIs -->
+    <div id="panel-mykpis" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">My KPIs</div>
+          <div class="page-sub">Track and update your individual performance targets</div>
+        </div>
+      </div>
+      <div id="my-kpis-list"></div>
+    </div>
+
+    <!-- EMPLOYEE: DAILY WORK LOG -->
+    <div id="panel-worklog" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Daily Work Report</div>
+          <div class="page-sub">Log daily activities, contribute towards KPI targets, and export monthly work logs</div>
+        </div>
+      </div>
+      <div id="worklog-container"></div>
+    </div>
+
+    <!-- HR: SYSTEM SETTINGS / MASTER CUSTOMIZATION -->
+    <div id="panel-settings" class="tab-panel" style="display:none;">
+      <div class="page-header">
+        <div>
+          <div class="page-title">System Settings & Customization</div>
+          <div class="page-sub">Manage master dropdown options for KPI units, offices, cycles, and departments</div>
+        </div>
+      </div>
+      <div id="settings-manager"></div>
+    </div>
+
+  </main>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
