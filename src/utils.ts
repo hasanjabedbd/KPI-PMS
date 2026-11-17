@@ -112,7 +112,37 @@ export interface WorkLogDoc {
   date: string;      // Work Date (selected by employee)
   logDate?: string;  // Log Date (auto-assigned by system on submission)
   entries: WorkLogEntry[];
+  otherTasks?: string; // Summary of non-KPI / general daily activities
   submittedAt: string;
+}
+
+export interface WorkLogDisplayRow {
+  isOther: boolean;
+  kpiTitle: string;
+  quantity: number;
+  unit: string;
+  notes: string;
+}
+
+export function getWorkLogDisplayRows(log: WorkLogDoc): WorkLogDisplayRow[] {
+  const rows: WorkLogDisplayRow[] = (log.entries || []).map((e) => ({
+    isOther: false,
+    kpiTitle: e.kpiTitle,
+    quantity: Number(e.quantity) || 0,
+    unit: e.unit || "",
+    notes: e.notes || "",
+  }));
+  const otherText = (log.otherTasks || "").trim();
+  if (otherText) {
+    rows.push({
+      isOther: true,
+      kpiTitle: "Additional / Non-KPI Work",
+      quantity: 0,
+      unit: "",
+      notes: otherText,
+    });
+  }
+  return rows;
 }
 
 export function getLogDate(log: WorkLogDoc): string {

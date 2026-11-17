@@ -43,6 +43,7 @@ import {
   fmtVal,
   getDeadlineStatus,
   getLogDate,
+  getWorkLogDisplayRows,
   computeAppraisalBreakdown,
   getPerformanceBand,
   filterKpisByEffectiveMonth,
@@ -238,6 +239,7 @@ export default function App() {
   const [worklogDate, setWorklogDate] = useState(today());
   const [worklogQty, setWorklogQty] = useState<Record<string, string>>({});
   const [worklogNotes, setWorklogNotes] = useState<Record<string, string>>({});
+  const [worklogOtherTasks, setWorklogOtherTasks] = useState<string>("");
   const [worklogMsg, setWorklogMsg] = useState<{ type: "info" | "success" | "danger"; text: string } | null>(null);
   const [historyMonth, setHistoryMonth] = useState(today().slice(0, 7));
   const [monthLogs, setMonthLogs] = useState<WorkLogDoc[]>([]);
@@ -1129,6 +1131,7 @@ export default function App() {
     }
     const kpis = currentProfile.kpis || [];
     const newInputs: WorkLogEntry[] = [];
+    const otherTasksInput = worklogOtherTasks.trim();
 
     kpis.forEach((k) => {
       const qty = Number(worklogQty[k.id]) || 0;
@@ -1144,19 +1147,22 @@ export default function App() {
       }
     });
 
-    if (newInputs.length === 0) {
-      setWorklogMsg({ type: "danger", text: "Please enter at least one quantity or work summary note." });
+    if (newInputs.length === 0 && !otherTasksInput) {
+      setWorklogMsg({
+        type: "danger",
+        text: "Please enter at least one KPI quantity/summary or describe your additional non-KPI tasks before submitting.",
+      });
       return;
     }
 
     try {
-      setWorklogMsg({ type: "info", text: "Saving work log and synchronizing KPI progress…" });
+      setWorklogMsg({ type: "info", text: "Saving daily work report and synchronizing progress…" });
       const systemLogDate = today();
       const logDocId = `${authUser.uid}_${date}`;
       const existingSnap = await getDoc(doc(db, "worklogs", logDocId));
-      const existingEntries: WorkLogEntry[] = existingSnap.exists()
-        ? (existingSnap.data() as WorkLogDoc).entries || []
-        : [];
+      const existingData = existingSnap.exists() ? (existingSnap.data() as WorkLogDoc) : null;
+      const existingEntries: WorkLogEntry[] = existingData?.entries || [];
+      const existingOtherTasks = (existingData?.otherTasks || "").trim();
 
       // Merge entries by kpiId so logging multiple times on the same date accumulates or updates cleanly
       const mergedMap = new Map<string, WorkLogEntry>();
@@ -1173,6 +1179,11 @@ export default function App() {
           mergedMap.set(inp.kpiId, inp);
         }
       });
+
+      const mergedOtherTasks =
+        existingOtherTasks && otherTasksInput
+          ? `${existingOtherTasks}\n${otherTasksInput}`
+          : otherTasksInput || existingOtherTasks;
 
       const finalEntries = Array.from(mergedMap.values());
       let updatedAnyKpi = false;
@@ -1196,6 +1207,7 @@ export default function App() {
         date,
         logDate: systemLogDate,
         entries: finalEntries,
+        otherTasks: mergedOtherTasks,
         submittedAt: new Date().toISOString(),
       });
 
@@ -1206,10 +1218,13 @@ export default function App() {
 
       setWorklogMsg({
         type: "success",
-        text: `Work report for ${date} (logged on ${systemLogDate}) submitted and KPI progress synchronized!`,
+        text: updatedAnyKpi
+          ? `Work report for ${date} (logged on ${systemLogDate}) submitted and KPI progress synchronized!`
+          : `Daily work report for ${date} (logged on ${systemLogDate}) submitted successfully!`,
       });
       setWorklogQty({});
       setWorklogNotes({});
+      setWorklogOtherTasks("");
       await fetchWorkLogHistory(authUser.uid, historyMonth);
     } catch (err: any) {
       setWorklogMsg({ type: "danger", text: `Failed to submit: ${err.message}` });
@@ -1270,21 +1285,23 @@ export default function App() {
     const suffix = periodSuffix || historyMonth || today().slice(0, 7);
 
     const rows: string[][] = [
-      ["Work Date", "Log Date", "Employee", "User ID", "Department", "KPI Title", "Quantity", "Unit", "Task Summary"],
+      ["Work Date", "Log Date", "Employee", "User ID", "Department", "Category", "KPI Title / Activity Type", "Quantity", "Unit", "Task Summary"],
     ];
     logsToUse.forEach((log) => {
       const logDateStr = getLogDate(log);
-      (log.entries || []).forEach((e) => {
+      const displayRows = getWorkLogDisplayRows(log);
+      displayRows.forEach((r) => {
         rows.push([
           log.date,
           logDateStr,
           profileToUse.name,
           profileToUse.userId,
           profileToUse.dept || "",
-          e.kpiTitle,
-          String(e.quantity || 0),
-          e.unit || "",
-          (e.notes || "").replace(/"/g, '""'),
+          r.isOther ? "Non-KPI / Other" : "KPI",
+          r.kpiTitle,
+          r.isOther ? "" : String(r.quantity || 0),
+          r.unit || "",
+          (r.notes || "").replace(/"/g, '""'),
         ]);
       });
     });
@@ -1544,19 +1561,20 @@ export default function App() {
             ${logs
               .map((log) => {
                 const logDateStr = getLogDate(log);
-                return (log.entries || [])
+                const displayRows = getWorkLogDisplayRows(log);
+                return displayRows
                   .map(
-                    (e, idx) => `
+                    (r, idx) => `
                   <tr>
                     ${
                       idx === 0
-                        ? `<td rowspan="${log.entries.length}" style="padding: 5px; border: 1px solid #c8c6c4; font-weight: 600; vertical-align: top; background:#fcfcfc; font-family:monospace; color:#201f1e;">${escapeHtml(log.date)}</td>
-                           <td rowspan="${log.entries.length}" style="padding: 5px; border: 1px solid #c8c6c4; color: #605e5c; vertical-align: top; background:#fcfcfc; font-family:monospace;">${escapeHtml(logDateStr)}</td>`
+                        ? `<td rowspan="${displayRows.length}" style="padding: 5px; border: 1px solid #c8c6c4; font-weight: 600; vertical-align: top; background:#fcfcfc; font-family:monospace; color:#201f1e;">${escapeHtml(log.date)}</td>
+                           <td rowspan="${displayRows.length}" style="padding: 5px; border: 1px solid #c8c6c4; color: #605e5c; vertical-align: top; background:#fcfcfc; font-family:monospace;">${escapeHtml(logDateStr)}</td>`
                         : ""
                     }
-                    <td style="padding: 5px; border: 1px solid #c8c6c4; color: #201f1e;">${escapeHtml(e.kpiTitle)}</td>
-                    <td style="padding: 5px; border: 1px solid #c8c6c4; text-align: center; font-weight: 600; color: #201f1e;">${e.quantity > 0 ? `+${e.quantity} ${escapeHtml(e.unit)}` : "—"}</td>
-                    <td style="padding: 5px; border: 1px solid #c8c6c4; color: #3b3a39;">${escapeHtml(e.notes) || "—"}</td>
+                    <td style="padding: 5px; border: 1px solid #c8c6c4; color: ${r.isOther ? "#038387" : "#201f1e"}; ${r.isOther ? "font-weight: 700;" : ""}">${escapeHtml(r.kpiTitle)}</td>
+                    <td style="padding: 5px; border: 1px solid #c8c6c4; text-align: center; font-weight: 600; color: #201f1e;">${!r.isOther && r.quantity > 0 ? `+${r.quantity} ${escapeHtml(r.unit)}` : "—"}</td>
+                    <td style="padding: 5px; border: 1px solid #c8c6c4; color: #3b3a39; white-space: pre-wrap;">${escapeHtml(r.notes) || "—"}</td>
                   </tr>
                 `
                   )
@@ -5108,7 +5126,7 @@ export default function App() {
         const kras = detailEmp.kras || [];
         const empKey = detailEmp._uid || detailEmp.userId;
         const totalActivityEntries = filteredDetailLogs.reduce(
-          (sum, l) => sum + (l.entries ? l.entries.length : 0),
+          (sum, l) => sum + getWorkLogDisplayRows(l).length,
           0
         );
 
@@ -5453,7 +5471,7 @@ export default function App() {
                   <div>
                     <div className="card-title">
                       3. Daily Work Activity Reports ({filteredDetailLogs.length} Logged Day
-                      {filteredDetailLogs.length === 1 ? "" : "s"} · {totalActivityEntries} KPI Entries)
+                      {filteredDetailLogs.length === 1 ? "" : "s"} · {totalActivityEntries} Activity Entries)
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
                       Displays both Work Date (Activity Date) and System Log Date (Submission Timestamp)
@@ -5503,7 +5521,7 @@ export default function App() {
                         <tr>
                           <th style={{ width: 110 }}>Work Date</th>
                           <th style={{ width: 110 }}>Log Date</th>
-                          <th style={{ width: 190 }}>KPI Metric</th>
+                          <th style={{ width: 190 }}>KPI / Activity Category</th>
                           <th style={{ width: 110 }}>Output</th>
                           <th>Work Summary / Accomplishments</th>
                         </tr>
@@ -5511,12 +5529,13 @@ export default function App() {
                       <tbody>
                         {filteredDetailLogs.map((log) => {
                           const logDateStr = getLogDate(log);
-                          return (log.entries || []).map((e, idx) => (
+                          const displayRows = getWorkLogDisplayRows(log);
+                          return displayRows.map((r, idx) => (
                             <tr key={`${log.date}_${idx}`}>
                               {idx === 0 && (
                                 <>
                                   <td
-                                    rowSpan={log.entries.length}
+                                    rowSpan={displayRows.length}
                                     className="mono"
                                     style={{
                                       fontWeight: 700,
@@ -5527,7 +5546,7 @@ export default function App() {
                                     {log.date}
                                   </td>
                                   <td
-                                    rowSpan={log.entries.length}
+                                    rowSpan={displayRows.length}
                                     className="mono"
                                     style={{
                                       color: "var(--text-secondary)",
@@ -5539,11 +5558,18 @@ export default function App() {
                                   </td>
                                 </>
                               )}
-                              <td style={{ fontWeight: 600 }}>{e.kpiTitle}</td>
-                              <td className="mono" style={{ fontWeight: 600, color: "var(--ms-blue)" }}>
-                                {e.quantity > 0 ? `+${e.quantity} ${e.unit}` : "—"}
+                              <td style={{ fontWeight: 600, color: r.isOther ? "#038387" : "inherit" }}>
+                                {r.kpiTitle}
+                                {r.isOther && (
+                                  <div style={{ fontSize: 11, fontWeight: 400, color: "var(--text-secondary)" }}>
+                                    Outside Assigned KPIs
+                                  </div>
+                                )}
                               </td>
-                              <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{e.notes || "—"}</td>
+                              <td className="mono" style={{ fontWeight: 600, color: "var(--ms-blue)" }}>
+                                {!r.isOther && r.quantity > 0 ? `+${r.quantity} ${r.unit}` : "—"}
+                              </td>
+                              <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{r.notes || "—"}</td>
                             </tr>
                           ));
                         })}
@@ -6887,9 +6913,9 @@ export default function App() {
 
               <div style={{ marginBottom: 16 }}>
                 {(!currentProfile.kpis || currentProfile.kpis.length === 0) ? (
-                  <div className="alert alert-info">
-                    No Quantitative KPIs have been assigned yet. KPIs must be assigned before submitting daily work
-                    reports.
+                  <div className="alert alert-info" style={{ marginBottom: 12 }}>
+                    No Quantitative KPIs have been assigned yet. You can still submit your Additional / Non-KPI daily
+                    activities below.
                   </div>
                 ) : (
                   currentProfile.kpis.map((k) => {
@@ -6979,6 +7005,57 @@ export default function App() {
                     );
                   })
                 )}
+
+                {/* Additional / Non-KPI Daily Activities */}
+                <div
+                  className="card"
+                  style={{
+                    marginBottom: 0,
+                    background: "var(--bg-surface)",
+                    borderColor: "#b4e0e0",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      marginBottom: 8,
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong style={{ color: "#038387" }}>Additional / Non-KPI Daily Activities</strong>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "#038387",
+                          background: "#e6f4f1",
+                          border: "1px solid #b4e0e0",
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                        }}
+                      >
+                        Outside Assigned KPIs
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                      Optional · General duties, ad-hoc tasks, cross-team support &amp; meetings
+                    </span>
+                  </div>
+                  <div className="form-field" style={{ marginBottom: 0 }}>
+                    <label>Other Work Summary / Non-KPI Tasks Completed</label>
+                    <textarea
+                      rows={3}
+                      style={{ minHeight: 76, resize: "vertical", lineHeight: 1.45 }}
+                      placeholder="Summarize any additional responsibilities, ad-hoc assignments, internal coordination, meetings, or operational tasks completed outside your assigned KPIs…"
+                      value={worklogOtherTasks}
+                      onChange={(e) => setWorklogOtherTasks(e.target.value)}
+                    />
+                  </div>
+                </div>
               </div>
 
               {(() => {
@@ -6993,18 +7070,18 @@ export default function App() {
                         submissions for this month are locked.
                       </div>
                     )}
-                    {currentProfile.kpis && currentProfile.kpis.length > 0 && (
-                      <button
-                        className="btn-primary"
-                        style={{ width: "auto", padding: "10px 24px" }}
-                        disabled={isSelectedWorklogLocked}
-                        onClick={handleSubmitDailyWorkLog}
-                      >
-                        {isSelectedWorklogLocked
-                          ? `🔒 Locked by HR (${selectedWorklogMonth})`
-                          : "Submit & Sync with KPIs"}
-                      </button>
-                    )}
+                    <button
+                      className="btn-primary"
+                      style={{ width: "auto", padding: "10px 24px" }}
+                      disabled={isSelectedWorklogLocked}
+                      onClick={handleSubmitDailyWorkLog}
+                    >
+                      {isSelectedWorklogLocked
+                        ? `🔒 Locked by HR (${selectedWorklogMonth})`
+                        : currentProfile.kpis && currentProfile.kpis.length > 0
+                        ? "Submit & Sync Daily Work Report"
+                        : "Submit Daily Work Report"}
+                    </button>
                   </>
                 );
               })()}
@@ -7068,7 +7145,7 @@ export default function App() {
                       <tr>
                         <th style={{ width: 110 }}>Work Date</th>
                         <th style={{ width: 110 }}>Log Date</th>
-                        <th style={{ width: 180 }}>KPI</th>
+                        <th style={{ width: 190 }}>KPI / Activity Category</th>
                         <th style={{ width: 110 }}>Quantity</th>
                         <th>Task Summary / Activity Log</th>
                       </tr>
@@ -7076,12 +7153,13 @@ export default function App() {
                     <tbody>
                       {monthLogs.map((log) => {
                         const logDateStr = getLogDate(log);
-                        return (log.entries || []).map((e, idx) => (
+                        const displayRows = getWorkLogDisplayRows(log);
+                        return displayRows.map((r, idx) => (
                           <tr key={`${log.date}_${idx}`}>
                             {idx === 0 && (
                               <>
                                 <td
-                                  rowSpan={log.entries.length}
+                                  rowSpan={displayRows.length}
                                   className="mono"
                                   style={{
                                     fontWeight: 600,
@@ -7092,7 +7170,7 @@ export default function App() {
                                   {log.date}
                                 </td>
                                 <td
-                                  rowSpan={log.entries.length}
+                                  rowSpan={displayRows.length}
                                   className="mono"
                                   style={{
                                     color: "var(--text-secondary)",
@@ -7104,11 +7182,18 @@ export default function App() {
                                 </td>
                               </>
                             )}
-                            <td style={{ fontWeight: 500 }}>{e.kpiTitle}</td>
-                            <td className="mono">
-                              {e.quantity > 0 ? `+${e.quantity} ${e.unit}` : "—"}
+                            <td style={{ fontWeight: 500, color: r.isOther ? "#038387" : "inherit" }}>
+                              {r.kpiTitle}
+                              {r.isOther && (
+                                <div style={{ fontSize: 11, fontWeight: 400, color: "var(--text-secondary)" }}>
+                                  Outside Assigned KPIs
+                                </div>
+                              )}
                             </td>
-                            <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{e.notes || "—"}</td>
+                            <td className="mono">
+                              {!r.isOther && r.quantity > 0 ? `+${r.quantity} ${r.unit}` : "—"}
+                            </td>
+                            <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{r.notes || "—"}</td>
                           </tr>
                         ));
                       })}
