@@ -53,6 +53,7 @@ import {
   isMonthFinalized,
   isMonthLockedForRole,
   computeYearlyAppraisalSummary,
+  computeSelfAssessmentStats,
 } from "./utils";
 
 declare global {
@@ -251,6 +252,16 @@ export default function App() {
   const [detailMonth, setDetailMonth] = useState(today().slice(0, 7));
   const [detailAllLogs, setDetailAllLogs] = useState<WorkLogDoc[]>([]);
   const [loadingDetailLogs, setLoadingDetailLogs] = useState(false);
+  const [hrEditingLogOrigDate, setHrEditingLogOrigDate] = useState<string | null>(null);
+  const [hrEditLogDate, setHrEditLogDate] = useState<string>("");
+  const [hrEditLogEntries, setHrEditLogEntries] = useState<WorkLogEntry[]>([]);
+  const [hrEditLogOtherTasks, setHrEditLogOtherTasks] = useState<string>("");
+  const [hrAddEntryKpiId, setHrAddEntryKpiId] = useState<string>("");
+  const [hrConfirmDeleteLogDate, setHrConfirmDeleteLogDate] = useState<string | null>(null);
+  const [hrWorkLogActionMsg, setHrWorkLogActionMsg] = useState<{
+    type: "info" | "success" | "danger";
+    text: string;
+  } | null>(null);
   const [generatingPdfFor, setGeneratingPdfFor] = useState<string | null>(null);
   const [hrReportDept, setHrReportDept] = useState<string>("ALL");
   const [hrReportMonth, setHrReportMonth] = useState<string>(today().slice(0, 7));
@@ -1033,10 +1044,94 @@ export default function App() {
     if (currentProfile?.role === "manager") await fetchTeamUsers(currentProfile.userId);
   }
 
+  async function handleEmployeeSelfRateCompetency(
+    compId: string,
+    selfRating: number,
+    targetMonth?: string
+  ) {
+    if (!currentProfile || !authUser) return;
+    const uid = currentProfile._uid || currentProfile.userId;
+    const filterM = targetMonth || empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(currentProfile, filterM);
+    const targetComp = qual.competencies.find((c) => c.id === compId);
+    const effMonth = (
+      targetComp?.effectiveMonth ||
+      (filterM !== "ALL" ? filterM : qual.effectiveMonth) ||
+      today().slice(0, 7)
+    ).trim();
+    if (isMonthFinalized(currentProfile, effMonth)) return;
+
+    const updateCompsList = (list: CompetencyItem[] | undefined) =>
+      (list || []).map((c) => (c.id === compId ? { ...c, selfRating } : c));
+
+    const nextStatus: AppraisalWorkflowStatus =
+      qual.workflowStatus === "hr_approved" || qual.workflowStatus === "manager_reviewed"
+        ? qual.workflowStatus
+        : "self_submitted";
+
+    const nextQual: QualitativeAssessment = {
+      ...qual,
+      effectiveMonth: effMonth,
+      competencies: updateCompsList(qual.competencies),
+      selfSubmittedAt: today(),
+      workflowStatus: nextStatus,
+    };
+
+    const baseRootQual = currentProfile.qualitative
+      ? {
+          ...currentProfile.qualitative,
+          competencies: updateCompsList(currentProfile.qualitative.competencies),
+          selfSubmittedAt: today(),
+        }
+      : nextQual;
+
+    const existingMonthQual = currentProfile.qualitativeByMonth?.[effMonth];
+    const nextMonthQual: QualitativeAssessment = existingMonthQual
+      ? {
+          ...existingMonthQual,
+          competencies: updateCompsList(existingMonthQual.competencies),
+          selfSubmittedAt: today(),
+          workflowStatus:
+            existingMonthQual.workflowStatus === "hr_approved" ||
+            existingMonthQual.workflowStatus === "manager_reviewed"
+              ? existingMonthQual.workflowStatus
+              : "self_submitted",
+        }
+      : nextQual;
+
+    const nextQualByMonth = {
+      ...(currentProfile.qualitativeByMonth || {}),
+      [effMonth]: nextMonthQual,
+    };
+
+    const nextRootQual =
+      !currentProfile.qualitative || currentProfile.qualitative.effectiveMonth === effMonth
+        ? nextMonthQual
+        : baseRootQual;
+
+    setCurrentProfile({
+      ...currentProfile,
+      qualitative: nextRootQual,
+      qualitativeByMonth: nextQualByMonth,
+      lastUpdate: today(),
+    });
+
+    await updateDoc(doc(db, "users", authUser.uid), {
+      qualitative: nextRootQual,
+      qualitativeByMonth: nextQualByMonth,
+      lastUpdate: today(),
+    });
+  }
+
   async function handleLoadStandardCompetencies(u: UserProfile) {
     const uid = u._uid || u.userId;
-    const qual = getEmployeeQualitative(u);
-    const effMonth = (empNewCompMonth[uid] || qual.effectiveMonth || today().slice(0, 7)).trim();
+    const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(u, selectedFilterMonth);
+    const effMonth = (
+      empNewCompMonth[uid] ||
+      (selectedFilterMonth !== "ALL" ? selectedFilterMonth : qual.effectiveMonth) ||
+      today().slice(0, 7)
+    ).trim();
     const existingForMonth = new Set(
       qual.competencies
         .filter((c) => (c.effectiveMonth || qual.effectiveMonth || effMonth) === effMonth)
@@ -1062,10 +1157,16 @@ export default function App() {
 
   async function handleAddCustomCompetency(u: UserProfile) {
     if (!u._uid) return;
-    const title = (empNewCompTitle[u._uid] || "").trim();
+    const uid = u._uid;
+    const title = (empNewCompTitle[uid] || "").trim();
     if (!title) return;
-    const qual = getEmployeeQualitative(u);
-    const effMonth = (empNewCompMonth[u._uid] || qual.effectiveMonth || today().slice(0, 7)).trim();
+    const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(u, selectedFilterMonth);
+    const effMonth = (
+      empNewCompMonth[uid] ||
+      (selectedFilterMonth !== "ALL" ? selectedFilterMonth : qual.effectiveMonth) ||
+      today().slice(0, 7)
+    ).trim();
     const nextComps: CompetencyItem[] = [
       ...qual.competencies,
       {
@@ -1076,7 +1177,7 @@ export default function App() {
         effectiveMonth: effMonth,
       },
     ];
-    setEmpNewCompTitle((prev) => ({ ...prev, [u._uid!]: "" }));
+    setEmpNewCompTitle((prev) => ({ ...prev, [uid]: "" }));
     await saveEmployeeQualitative(u, {
       ...qual,
       effectiveMonth: effMonth,
@@ -1086,7 +1187,9 @@ export default function App() {
   }
 
   async function handleUpdateCompetencyEffectiveMonth(u: UserProfile, compId: string, nextMonth: string) {
-    const qual = getEmployeeQualitative(u);
+    const uid = u._uid || u.userId;
+    const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(u, selectedFilterMonth);
     const trimmed = nextMonth.trim() || today().slice(0, 7);
     const nextComps = qual.competencies.map((c) =>
       c.id === compId ? { ...c, effectiveMonth: trimmed } : c
@@ -1099,7 +1202,9 @@ export default function App() {
   }
 
   async function handleRateCompetency(u: UserProfile, compId: string, rating: number) {
-    const qual = getEmployeeQualitative(u);
+    const uid = u._uid || u.userId;
+    const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(u, selectedFilterMonth);
     const nextComps = qual.competencies.map((c) => (c.id === compId ? { ...c, rating } : c));
     await saveEmployeeQualitative(u, {
       ...qual,
@@ -1109,7 +1214,9 @@ export default function App() {
   }
 
   async function handleRemoveCompetency(u: UserProfile, compId: string) {
-    const qual = getEmployeeQualitative(u);
+    const uid = u._uid || u.userId;
+    const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
+    const qual = getEmployeeQualitative(u, selectedFilterMonth);
     const nextComps = qual.competencies.filter((c) => c.id !== compId);
     await saveEmployeeQualitative(u, {
       ...qual,
@@ -1239,25 +1346,30 @@ export default function App() {
         const snapUid = await getDocs(query(collection(db, "worklogs"), where("userUid", "==", emp._uid)));
         snapUid.forEach((d) => {
           const data = d.data() as WorkLogDoc;
-          if (data.date) map.set(`${data.date}_${d.id}`, data);
+          if (data.date) map.set(d.id, { ...data, _docId: d.id });
         });
       }
       if (emp.userId) {
         const snapId = await getDocs(query(collection(db, "worklogs"), where("userId", "==", emp.userId)));
         snapId.forEach((d) => {
           const data = d.data() as WorkLogDoc;
-          if (data.date) map.set(`${data.date}_${d.id}`, data);
+          if (data.date) map.set(d.id, { ...data, _docId: d.id });
         });
       }
     } catch (e) {
       console.error("Failed to fetch employee worklogs:", e);
     }
-    // Deduplicate by date (keep latest submittedAt if multiple docs for same date)
+    // Deduplicate by date (keep latest submittedAt if multiple docs for same date, and track all underlying doc IDs)
     const byDate = new Map<string, WorkLogDoc>();
     Array.from(map.values()).forEach((item) => {
       const prev = byDate.get(item.date);
+      const docIds = Array.from(
+        new Set([...(prev?._allDocIds || []), ...(item._docId ? [item._docId] : [])])
+      );
       if (!prev || (item.submittedAt || "") >= (prev.submittedAt || "")) {
-        byDate.set(item.date, item);
+        byDate.set(item.date, { ...item, _allDocIds: docIds });
+      } else {
+        byDate.set(item.date, { ...prev, _allDocIds: docIds });
       }
     });
     return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
@@ -1268,12 +1380,235 @@ export default function App() {
     setDetailEmpUid(uid);
     setDetailFilterMode("all");
     setDetailMonth(today().slice(0, 7));
+    setHrEditingLogOrigDate(null);
+    setHrConfirmDeleteLogDate(null);
+    setHrWorkLogActionMsg(null);
     setLoadingDetailLogs(true);
     try {
       const logs = await fetchAllLogsForEmployee(emp);
       setDetailAllLogs(logs);
     } finally {
       setLoadingDetailLogs(false);
+    }
+  }
+
+  function handleHrStartEditWorkLog(log: WorkLogDoc, emp: UserProfile) {
+    setHrEditingLogOrigDate(log.date);
+    setHrEditLogDate(log.date);
+    setHrEditLogEntries((log.entries || []).map((e) => ({ ...e })));
+    setHrEditLogOtherTasks(log.otherTasks || "");
+    const firstAvailableKpi = (emp.kpis || [])[0]?.id || "";
+    setHrAddEntryKpiId(firstAvailableKpi);
+    setHrConfirmDeleteLogDate(null);
+    setHrWorkLogActionMsg(null);
+  }
+
+  async function applyKpiQuantityDeltasForEmployee(
+    emp: UserProfile,
+    deltaByKpiId: Map<string, number>
+  ) {
+    if (!emp._uid || deltaByKpiId.size === 0) return;
+    const currentKpis = emp.kpis || [];
+    let changed = false;
+    const nextKpis = currentKpis.map((k) => {
+      const delta = deltaByKpiId.get(k.id) || 0;
+      if (Math.abs(delta) > 0.0001) {
+        changed = true;
+        const nextCurrent = Math.max(0, Number((Number(k.current || 0) + delta).toFixed(2)));
+        return { ...k, current: nextCurrent };
+      }
+      return k;
+    });
+    if (changed) {
+      await updateDoc(doc(db, "users", emp._uid), {
+        kpis: nextKpis,
+        lastUpdate: today(),
+      });
+      await fetchAllUsers();
+    }
+  }
+
+  async function handleHrSaveEditWorkLog(emp: UserProfile, origLog: WorkLogDoc) {
+    if (currentProfile?.role !== "hr") return;
+    const nextDate = (hrEditLogDate || origLog.date).trim();
+    if (!nextDate) return;
+
+    const cleanedEntries: WorkLogEntry[] = hrEditLogEntries
+      .map((e) => ({
+        ...e,
+        quantity: Math.max(0, Number(e.quantity) || 0),
+        notes: (e.notes || "").trim(),
+      }))
+      .filter((e) => e.quantity > 0 || e.notes.length > 0);
+    const cleanedOther = hrEditLogOtherTasks.trim();
+
+    if (cleanedEntries.length === 0 && !cleanedOther) {
+      await handleHrDeleteWorkLog(emp, origLog);
+      return;
+    }
+
+    try {
+      setHrWorkLogActionMsg({ type: "info", text: "Saving updated work log and synchronizing KPI progress…" });
+
+      // Calculate KPI quantity deltas (new - old)
+      const deltaMap = new Map<string, number>();
+      (origLog.entries || []).forEach((oldE) => {
+        deltaMap.set(oldE.kpiId, (deltaMap.get(oldE.kpiId) || 0) - (Number(oldE.quantity) || 0));
+      });
+      cleanedEntries.forEach((newE) => {
+        deltaMap.set(newE.kpiId, (deltaMap.get(newE.kpiId) || 0) + (Number(newE.quantity) || 0));
+      });
+
+      const empUid = emp._uid || origLog.userUid;
+      const targetDocId =
+        nextDate === origLog.date && origLog._docId ? origLog._docId : `${empUid}_${nextDate}`;
+
+      // If date changed or multiple duplicate docs existed, clean up old docs first
+      const oldDocIds = Array.from(
+        new Set([...(origLog._allDocIds || []), ...(origLog._docId ? [origLog._docId] : [`${empUid}_${origLog.date}`])])
+      );
+      for (const oldId of oldDocIds) {
+        if (oldId !== targetDocId) {
+          try {
+            await deleteDoc(doc(db, "worklogs", oldId));
+          } catch (_) {
+            // ignore if doc doesn't exist
+          }
+        }
+      }
+
+      await setDoc(doc(db, "worklogs", targetDocId), {
+        userId: emp.userId,
+        userUid: empUid,
+        userName: emp.name,
+        dept: emp.dept || "",
+        date: nextDate,
+        logDate: origLog.logDate || getLogDate(origLog),
+        entries: cleanedEntries,
+        otherTasks: cleanedOther,
+        submittedAt: origLog.submittedAt || new Date().toISOString(),
+      });
+
+      await applyKpiQuantityDeltasForEmployee(emp, deltaMap);
+
+      const refreshedLogs = await fetchAllLogsForEmployee(emp);
+      setDetailAllLogs(refreshedLogs);
+      setHrEditingLogOrigDate(null);
+      setHrWorkLogActionMsg({
+        type: "success",
+        text: `Work log for ${nextDate} updated and KPI achievements synchronized.`,
+      });
+      setTimeout(() => setHrWorkLogActionMsg(null), 4000);
+    } catch (err: any) {
+      setHrWorkLogActionMsg({
+        type: "danger",
+        text: `Failed to update work log: ${err.message || "Unknown error"}`,
+      });
+    }
+  }
+
+  async function handleHrDeleteWorkLog(emp: UserProfile, logToDelete: WorkLogDoc) {
+    if (currentProfile?.role !== "hr") return;
+    try {
+      setHrWorkLogActionMsg({ type: "info", text: `Deleting work log for ${logToDelete.date}…` });
+      const empUid = emp._uid || logToDelete.userUid;
+      const docIdsToDelete = Array.from(
+        new Set([
+          ...(logToDelete._allDocIds || []),
+          ...(logToDelete._docId ? [logToDelete._docId] : []),
+          ...(empUid ? [`${empUid}_${logToDelete.date}`] : []),
+        ])
+      );
+      for (const dId of docIdsToDelete) {
+        try {
+          await deleteDoc(doc(db, "worklogs", dId));
+        } catch (_) {
+          // ignore if not found
+        }
+      }
+
+      // Subtract logged KPI quantities from employee's KPI current values
+      const deltaMap = new Map<string, number>();
+      (logToDelete.entries || []).forEach((e) => {
+        if (Number(e.quantity) > 0) {
+          deltaMap.set(e.kpiId, (deltaMap.get(e.kpiId) || 0) - Number(e.quantity));
+        }
+      });
+      await applyKpiQuantityDeltasForEmployee(emp, deltaMap);
+
+      const refreshedLogs = await fetchAllLogsForEmployee(emp);
+      setDetailAllLogs(refreshedLogs);
+      setHrConfirmDeleteLogDate(null);
+      setHrEditingLogOrigDate(null);
+      setHrWorkLogActionMsg({
+        type: "success",
+        text: `Work log for ${logToDelete.date} deleted and KPI progress adjusted.`,
+      });
+      setTimeout(() => setHrWorkLogActionMsg(null), 4000);
+    } catch (err: any) {
+      setHrWorkLogActionMsg({
+        type: "danger",
+        text: `Failed to delete work log: ${err.message || "Unknown error"}`,
+      });
+    }
+  }
+
+  async function handleHrDeleteSingleWorkLogRow(
+    emp: UserProfile,
+    log: WorkLogDoc,
+    rowIdxInEntries: number | undefined,
+    isOtherRow: boolean
+  ) {
+    if (currentProfile?.role !== "hr") return;
+    const nextEntries = isOtherRow
+      ? [...(log.entries || [])]
+      : (log.entries || []).filter((_, i) => i !== rowIdxInEntries);
+    const nextOther = isOtherRow ? "" : (log.otherTasks || "").trim();
+
+    if (nextEntries.length === 0 && !nextOther) {
+      await handleHrDeleteWorkLog(emp, log);
+      return;
+    }
+
+    try {
+      setHrWorkLogActionMsg({ type: "info", text: "Removing entry from work log…" });
+      const empUid = emp._uid || log.userUid;
+      const targetDocId = log._docId || `${empUid}_${log.date}`;
+
+      if (!isOtherRow && typeof rowIdxInEntries === "number") {
+        const removedEntry = (log.entries || [])[rowIdxInEntries];
+        if (removedEntry && Number(removedEntry.quantity) > 0) {
+          const deltaMap = new Map<string, number>([
+            [removedEntry.kpiId, -Number(removedEntry.quantity)],
+          ]);
+          await applyKpiQuantityDeltasForEmployee(emp, deltaMap);
+        }
+      }
+
+      await setDoc(doc(db, "worklogs", targetDocId), {
+        userId: emp.userId,
+        userUid: empUid,
+        userName: emp.name,
+        dept: emp.dept || "",
+        date: log.date,
+        logDate: log.logDate || getLogDate(log),
+        entries: nextEntries,
+        otherTasks: nextOther,
+        submittedAt: log.submittedAt || new Date().toISOString(),
+      });
+
+      const refreshedLogs = await fetchAllLogsForEmployee(emp);
+      setDetailAllLogs(refreshedLogs);
+      setHrWorkLogActionMsg({
+        type: "success",
+        text: `Entry removed from ${log.date} work log.`,
+      });
+      setTimeout(() => setHrWorkLogActionMsg(null), 3500);
+    } catch (err: any) {
+      setHrWorkLogActionMsg({
+        type: "danger",
+        text: `Failed to remove entry: ${err.message || "Unknown error"}`,
+      });
     }
   }
 
@@ -1373,34 +1708,204 @@ export default function App() {
       reportContainer.style.backgroundColor = "#ffffff";
       reportContainer.style.boxSizing = "border-box";
 
-      const qualCompetenciesRowsHtml =
-        qual.mode === "competencies" && pdfCompetencies.length > 0
+      const isEmployeeViewer = currentProfile?.role === "employee";
+      const selfStats = computeSelfAssessmentStats(qual, effectiveMonthForPdf);
+
+      const qualCompetenciesRowsHtml = isEmployeeViewer
+        ? qual.mode === "competencies" && pdfCompetencies.length > 0
           ? pdfCompetencies
               .map((c) => {
-                const rInfo = RATING_SCALE[c.rating] || RATING_SCALE[3];
+                const selfVal = c.selfRating;
+                const sInfo = selfVal ? RATING_SCALE[selfVal] : null;
                 return `
                   <tr>
                     <td style="padding: 6px 8px; border: 1px solid #c8c6c4; font-weight: 600; color: #201f1e;">${escapeHtml(c.title)}</td>
                     <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: #038387;">${escapeHtml(c.effectiveMonth || qual.effectiveMonth || "All Months")}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: #201f1e;">${sInfo ? `${selfVal} / 5` : "Not Rated"}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #201f1e;">${sInfo ? `${sInfo.pct}%` : "—"}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-weight: 700; color: ${sInfo ? sInfo.color : "#605e5c"};">${sInfo ? escapeHtml(sInfo.shortLabel) : "Pending Self-Rating"}</td>
+                  </tr>
+                `;
+              })
+              .join("")
+          : `<tr><td colspan="5" style="padding: 8px; border: 1px solid #c8c6c4; text-align: center; color: #605e5c;">No behavioral competencies assigned for self-assessment in this period.</td></tr>`
+        : qual.mode === "competencies" && pdfCompetencies.length > 0
+        ? pdfCompetencies
+            .map((c) => {
+              const rInfo = RATING_SCALE[c.rating] || RATING_SCALE[3];
+              const selfVal = c.selfRating;
+              const sInfo = selfVal ? RATING_SCALE[selfVal] : null;
+              return `
+                  <tr>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; font-weight: 600; color: #201f1e;">${escapeHtml(c.title)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: #038387;">${escapeHtml(c.effectiveMonth || qual.effectiveMonth || "All Months")}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #005a9e;">${sInfo ? `${selfVal} / 5 (${sInfo.pct}%)` : "—"}</td>
                     <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: #201f1e;">${c.rating} / 5</td>
                     <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #201f1e;">${rInfo.pct}%</td>
                     <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-weight: 700; color: ${rInfo.color};">${escapeHtml(rInfo.shortLabel)}</td>
                   </tr>
                 `;
-              })
-              .join("")
-          : `<tr><td colspan="5" style="padding: 8px; border: 1px solid #c8c6c4; text-align: center; color: #605e5c;">${
-              qual.mode === "direct"
-                ? `Direct Qualitative Score Assigned (${escapeHtml(qual.effectiveMonth || "All Months")}): <strong style="color:#038387;">${br.qualPoints} / ${br.qualWeight} pts (${br.qualRawPct}%)</strong>`
-                : "No qualitative competencies evaluated yet."
-            }</td></tr>`;
+            })
+            .join("")
+        : `<tr><td colspan="6" style="padding: 8px; border: 1px solid #c8c6c4; text-align: center; color: #605e5c;">${
+            qual.mode === "direct"
+              ? `Direct Qualitative Score Assigned (${escapeHtml(qual.effectiveMonth || "All Months")}): <strong style="color:#038387;">${br.qualPoints} / ${br.qualWeight} pts (${br.qualRawPct}%)</strong>`
+              : "No qualitative competencies evaluated yet."
+          }</td></tr>`;
+
+      const summaryStripHtml = isEmployeeViewer
+        ? `
+        <table style="width: 100%; border-collapse: collapse; background: #eff6fc; border: 1px solid #c7e0f4; margin-bottom: 18px; font-size: 11px;">
+          <tr>
+            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 34%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative (${br.quantWeight}% Weight)</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${br.quantPoints} / ${br.quantWeight} pts</div>
+              <div style="font-size: 10px; color: #605e5c;">Raw KPI Achievement: ${br.quantRawPct}%</div>
+            </td>
+            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment B: My Self-Assessment</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #038387; margin-top: 2px;">${
+                qual.mode === "competencies"
+                  ? selfStats.ratedCount > 0
+                    ? `${selfStats.selfRawPct}%`
+                    : "Pending"
+                  : qual.selfAppraisalNote
+                  ? "Submitted"
+                  : "Pending"
+              }</div>
+              <div style="font-size: 10px; color: #605e5c;">${
+                qual.mode === "competencies"
+                  ? `Self-Rated: ${selfStats.ratedCount} / ${pdfCompetencies.length} Competencies`
+                  : "Employee Self-Appraisal Input"
+              }</div>
+            </td>
+            <td style="padding: 10px; width: 33%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Work Log &amp; Self-Appraisal</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #201f1e; margin-top: 2px;">${logs.length} Day(s) Logged</div>
+              <div style="font-size: 10px; color: #605e5c;">Self-Note: ${qual.selfAppraisalNote ? "Recorded" : "Not Recorded"}</div>
+            </td>
+          </tr>
+        </table>`
+        : `
+        <table style="width: 100%; border-collapse: collapse; background: #eff6fc; border: 1px solid #c7e0f4; margin-bottom: 18px; font-size: 11px;">
+          <tr>
+            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative (${br.quantWeight}%)</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${br.quantPoints} / ${br.quantWeight} pts</div>
+              <div style="font-size: 10px; color: #605e5c;">Raw KPI Achievement: ${br.quantRawPct}%</div>
+            </td>
+            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment B: Qualitative (${br.qualWeight}%)</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #038387; margin-top: 2px;">${br.qualPoints} / ${br.qualWeight} pts</div>
+              <div style="font-size: 10px; color: #605e5c;">Supervisor: ${br.qualRawPct}%${
+                selfStats.ratedCount > 0 ? ` · Emp Self: ${selfStats.selfRawPct}%` : ""
+              }</div>
+            </td>
+            <td style="padding: 10px; width: 34%;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Total Appraisal Score (100%)</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: ${br.band.color}; margin-top: 2px;">${br.totalScore}%</div>
+              <div style="font-size: 10px; font-weight: 700; color: ${br.band.color};">${escapeHtml(br.band.label)}</div>
+            </td>
+          </tr>
+        </table>`;
+
+      const segmentBSectionHtml = isEmployeeViewer
+        ? `
+        <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
+          2. Segment B — My Self-Assessment &amp; Self-Appraisal Input
+        </div>
+        ${
+          qual.mode === "competencies"
+            ? `<table style="width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 11px;">
+                <thead>
+                  <tr style="background: #edebe9;">
+                    <th style="padding: 6px; text-align: left; border: 1px solid #c8c6c4; color: #201f1e;">Behavioral Competency</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 95px; color: #201f1e;">Effective Month</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 90px; color: #201f1e;">My Self-Rating</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 75px; color: #201f1e;">Self Score %</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 130px; color: #201f1e;">Self-Assessment Level</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${qualCompetenciesRowsHtml}
+                </tbody>
+              </table>`
+            : ""
+        }
+        <table style="width: 100%; border-collapse: collapse; background: #f8f9fa; border: 1px solid #e1dfdd; margin-bottom: 16px; font-size: 11px;">
+          <tr>
+            <td style="padding: 8px 10px; vertical-align: top;">
+              <strong style="display:block; color:#005a9e; margin-bottom:2px;">My Self-Appraisal Summary Note ${
+                qual.selfSubmittedAt ? `(Submitted: ${escapeHtml(qual.selfSubmittedAt)})` : ""
+              }:</strong>
+              <div style="color:#201f1e; white-space: pre-wrap;">${escapeHtml(qual.selfAppraisalNote || "No self-appraisal note submitted for this period.")}</div>
+            </td>
+          </tr>
+        </table>`
+        : `
+        <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
+          2. Segment B — Qualitative &amp; Behavioral Competency Evaluation (${br.qualWeight}% Weight)
+        </div>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 11px;">
+          <thead>
+            <tr style="background: #edebe9;">
+              <th style="padding: 6px; text-align: left; border: 1px solid #c8c6c4; color: #201f1e;">Behavioral Competency</th>
+              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 85px; color: #201f1e;">Effective Month</th>
+              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 95px; color: #005a9e;">Emp Self-Rating</th>
+              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 90px; color: #201f1e;">Supervisor Rating</th>
+              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 65px; color: #201f1e;">Score %</th>
+              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 115px; color: #201f1e;">Evaluation Level</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${qualCompetenciesRowsHtml}
+          </tbody>
+        </table>
+
+        <table style="width: 100%; border-collapse: collapse; background: #f8f9fa; border: 1px solid #e1dfdd; margin-bottom: 16px; font-size: 11px;">
+          <tr>
+            <td style="padding: 8px 10px; border-right: 1px solid #e1dfdd; width: 34%; vertical-align: top;">
+              <strong style="display:block; color:#005a9e; margin-bottom:2px;">Appraisal Workflow Status:</strong>
+              <div style="font-weight:700; color:${(APPRAISAL_WORKFLOW_LABELS[qual.workflowStatus || "draft"] || APPRAISAL_WORKFLOW_LABELS.draft).color};">
+                ${escapeHtml((APPRAISAL_WORKFLOW_LABELS[qual.workflowStatus || "draft"] || APPRAISAL_WORKFLOW_LABELS.draft).label)}
+              </div>
+              ${qual.employeeAcknowledged ? `<div style="font-size:10px; color:#107c10; margin-top:2px;">✓ Employee Signed Off (${escapeHtml(qual.acknowledgedAt || "")})</div>` : ""}
+            </td>
+            <td style="padding: 8px 10px; border-right: 1px solid #e1dfdd; width: 33%; vertical-align: top;">
+              <strong style="display:block; color:#038387; margin-bottom:2px;">Management Recommendation:</strong>
+              <div style="font-weight:700; color:#201f1e;">${escapeHtml(qual.recommendation || "Pending Decision")}</div>
+            </td>
+            <td style="padding: 8px 10px; width: 33%; vertical-align: top;">
+              <strong style="display:block; color:#605e5c; margin-bottom:2px;">Employee Self-Appraisal Note:</strong>
+              <div style="color:#201f1e;">${escapeHtml(qual.selfAppraisalNote || "—")}</div>
+            </td>
+          </tr>
+          ${
+            qual.strengths || qual.improvements
+              ? `<tr>
+                  <td colspan="2" style="padding: 8px 10px; border-top: 1px solid #e1dfdd; border-right: 1px solid #e1dfdd; vertical-align: top;">
+                    <strong style="display:block; color:#107c10; margin-bottom:2px;">Key Strengths:</strong>
+                    <div style="color:#201f1e;">${escapeHtml(qual.strengths || "—")}</div>
+                  </td>
+                  <td style="padding: 8px 10px; border-top: 1px solid #e1dfdd; vertical-align: top;">
+                    <strong style="display:block; color:#ca5010; margin-bottom:2px;">Areas for Growth / Coaching:</strong>
+                    <div style="color:#201f1e;">${escapeHtml(qual.improvements || "—")}</div>
+                  </td>
+                </tr>`
+              : ""
+          }
+        </table>`;
 
       reportContainer.innerHTML = `
         <table style="width: 100%; border-collapse: collapse; border-bottom: 2px solid #0078d4; margin-bottom: 14px;">
           <tr>
             <td style="padding: 0 0 10px 0; vertical-align: bottom;">
               <div style="color: #0078d4; font-size: 22px; font-weight: 700; line-height: 1.2;">KPI Ledger</div>
-              <div style="font-size: 12px; color: #605e5c; margin-top: 2px;">Executive Performance Appraisal &amp; Work Activity Report</div>
+              <div style="font-size: 12px; color: #605e5c; margin-top: 2px;">${
+                isEmployeeViewer
+                  ? "Employee KPI Achievement, Self-Assessment &amp; Work Activity Report"
+                  : "Executive Performance Appraisal &amp; Work Activity Report"
+              }</div>
             </td>
             <td style="padding: 0 0 10px 0; text-align: right; vertical-align: bottom;">
               <div style="font-size: 12px; font-weight: 700; color: #201f1e;">Period: ${escapeHtml(periodLabel)}</div>
@@ -1429,25 +1934,7 @@ export default function App() {
           </tr>
         </table>
 
-        <table style="width: 100%; border-collapse: collapse; background: #eff6fc; border: 1px solid #c7e0f4; margin-bottom: 18px; font-size: 11px;">
-          <tr>
-            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
-              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative (${br.quantWeight}%)</div>
-              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${br.quantPoints} / ${br.quantWeight} pts</div>
-              <div style="font-size: 10px; color: #605e5c;">Raw KPI Achievement: ${br.quantRawPct}%</div>
-            </td>
-            <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
-              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment B: Qualitative (${br.qualWeight}%)</div>
-              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #038387; margin-top: 2px;">${br.qualPoints} / ${br.qualWeight} pts</div>
-              <div style="font-size: 10px; color: #605e5c;">Behavioral Score: ${br.qualRawPct}%</div>
-            </td>
-            <td style="padding: 10px; width: 34%;">
-              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Total Appraisal Score (100%)</div>
-              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: ${br.band.color}; margin-top: 2px;">${br.totalScore}%</div>
-              <div style="font-size: 10px; font-weight: 700; color: ${br.band.color};">${escapeHtml(br.band.label)}</div>
-            </td>
-          </tr>
-        </table>
+        ${summaryStripHtml}
 
         <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
           1. Segment A — Quantitative KPI Target Achievement (${br.quantWeight}% Weight)
@@ -1491,57 +1978,7 @@ export default function App() {
           </tbody>
         </table>
 
-        <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
-          2. Segment B — Qualitative &amp; Behavioral Competency Evaluation (${br.qualWeight}% Weight)
-        </div>
-        <table style="width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 11px;">
-          <thead>
-            <tr style="background: #edebe9;">
-              <th style="padding: 6px; text-align: left; border: 1px solid #c8c6c4; color: #201f1e;">Behavioral Competency</th>
-              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 95px; color: #201f1e;">Effective Month</th>
-              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 75px; color: #201f1e;">Rating</th>
-              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 75px; color: #201f1e;">Score %</th>
-              <th style="padding: 6px; text-align: center; border: 1px solid #c8c6c4; width: 120px; color: #201f1e;">Evaluation Level</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${qualCompetenciesRowsHtml}
-          </tbody>
-        </table>
-
-        <table style="width: 100%; border-collapse: collapse; background: #f8f9fa; border: 1px solid #e1dfdd; margin-bottom: 16px; font-size: 11px;">
-          <tr>
-            <td style="padding: 8px 10px; border-right: 1px solid #e1dfdd; width: 34%; vertical-align: top;">
-              <strong style="display:block; color:#005a9e; margin-bottom:2px;">Appraisal Workflow Status:</strong>
-              <div style="font-weight:700; color:${(APPRAISAL_WORKFLOW_LABELS[qual.workflowStatus || "draft"] || APPRAISAL_WORKFLOW_LABELS.draft).color};">
-                ${escapeHtml((APPRAISAL_WORKFLOW_LABELS[qual.workflowStatus || "draft"] || APPRAISAL_WORKFLOW_LABELS.draft).label)}
-              </div>
-              ${qual.employeeAcknowledged ? `<div style="font-size:10px; color:#107c10; margin-top:2px;">✓ Employee Signed Off (${escapeHtml(qual.acknowledgedAt || "")})</div>` : ""}
-            </td>
-            <td style="padding: 8px 10px; border-right: 1px solid #e1dfdd; width: 33%; vertical-align: top;">
-              <strong style="display:block; color:#038387; margin-bottom:2px;">Management Recommendation:</strong>
-              <div style="font-weight:700; color:#201f1e;">${escapeHtml(qual.recommendation || "Pending Decision")}</div>
-            </td>
-            <td style="padding: 8px 10px; width: 33%; vertical-align: top;">
-              <strong style="display:block; color:#605e5c; margin-bottom:2px;">Employee Self-Appraisal Note:</strong>
-              <div style="color:#201f1e;">${escapeHtml(qual.selfAppraisalNote || "—")}</div>
-            </td>
-          </tr>
-          ${
-            qual.strengths || qual.improvements
-              ? `<tr>
-                  <td colspan="2" style="padding: 8px 10px; border-top: 1px solid #e1dfdd; border-right: 1px solid #e1dfdd; vertical-align: top;">
-                    <strong style="display:block; color:#107c10; margin-bottom:2px;">Key Strengths:</strong>
-                    <div style="color:#201f1e;">${escapeHtml(qual.strengths || "—")}</div>
-                  </td>
-                  <td style="padding: 8px 10px; border-top: 1px solid #e1dfdd; vertical-align: top;">
-                    <strong style="display:block; color:#ca5010; margin-bottom:2px;">Areas for Growth / Coaching:</strong>
-                    <div style="color:#201f1e;">${escapeHtml(qual.improvements || "—")}</div>
-                  </td>
-                </tr>`
-              : ""
-          }
-        </table>
+        ${segmentBSectionHtml}
 
         <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
           3. Daily Work Activity Details (${logs.length} Logged Day${logs.length === 1 ? "" : "s"})
@@ -1644,6 +2081,7 @@ export default function App() {
   async function downloadYearlyAppraisalPdf(targetUser?: UserProfile, yearStr?: string) {
     const u = targetUser || currentProfile;
     if (!u) return;
+    const isEmployeeViewer = currentProfile?.role === "employee";
     const uid = u._uid || u.userId;
     const year = (yearStr || selectedYearForReport || today().slice(0, 4)).slice(0, 4);
     setGeneratingPdfFor(`yearly_${uid}`);
@@ -1663,6 +2101,29 @@ export default function App() {
         .map((m, i) => {
           const wfBadge = APPRAISAL_WORKFLOW_LABELS[m.workflowStatus] || APPRAISAL_WORKFLOW_LABELS.draft;
           const rowBg = m.isEvaluated ? (i % 2 === 1 ? "#f8fbff" : "#ffffff") : "#fafafa";
+          if (isEmployeeViewer) {
+            const qBand = getPerformanceBand(m.quantRawPct);
+            const hasEmpData = m.isEvaluated || m.selfRatedCount > 0 || m.hasSelfNote;
+            return `
+              <tr style="background: ${rowBg};">
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; font-family: monospace; font-weight: 700; color: #201f1e;">
+                  ${escapeHtml(m.monthLabel)}
+                </td>
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${hasEmpData ? "#0078d4" : "#a19f9d"}; font-weight: 700;">
+                  ${hasEmpData ? `${m.quantPoints} / 80` : "—"}
+                </td>
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: ${hasEmpData ? qBand.color : "#a19f9d"};">
+                  ${hasEmpData ? `${m.quantRawPct}%` : "—"}
+                </td>
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${m.selfRatedCount > 0 ? "#038387" : "#a19f9d"}; font-weight: 700;">
+                  ${m.selfRatedCount > 0 ? `${m.selfQualRawPct}% (${m.selfRatedCount}/${m.totalCompCount})` : m.totalCompCount > 0 ? `0/${m.totalCompCount} Rated` : "—"}
+                </td>
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-size: 9px; color: ${m.hasSelfNote ? "#107c10" : "#605e5c"}; font-weight: 700;">
+                  ${m.hasSelfNote ? "Submitted" : "—"}
+                </td>
+              </tr>
+            `;
+          }
           return `
             <tr style="background: ${rowBg};">
               <td style="padding: 6px 8px; border: 1px solid #c8c6c4; font-family: monospace; font-weight: 700; color: #201f1e;">
@@ -1673,6 +2134,7 @@ export default function App() {
               </td>
               <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${m.isEvaluated ? "#038387" : "#a19f9d"}; font-weight: 700;">
                 ${m.isEvaluated ? `${m.qualPoints} / 20 (${m.qualRawPct}%)` : "—"}
+                ${m.selfRatedCount > 0 ? `<div style="font-size: 8px; color: #005a9e;">Self: ${m.selfQualRawPct}%</div>` : ""}
               </td>
               <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: ${m.isEvaluated ? m.band.color : "#a19f9d"};">
                 ${m.isEvaluated ? `${m.totalScore}%` : "Not Evaluated"}
@@ -1693,7 +2155,127 @@ export default function App() {
         })
         .join("");
 
-      reportContainer.innerHTML = `
+      reportContainer.innerHTML = isEmployeeViewer
+        ? `
+        <table style="width: 100%; border-collapse: collapse; border-bottom: 2px solid #0078d4; margin-bottom: 14px;">
+          <tr>
+            <td style="padding: 0 0 10px 0; vertical-align: bottom;">
+              <div style="color: #0078d4; font-size: 22px; font-weight: 700; line-height: 1.2;">KPI Ledger</div>
+              <div style="font-size: 13px; font-weight: 700; color: #201f1e; margin-top: 2px;">
+                Annual Employee KPI Achievement &amp; Self-Assessment Report (${escapeHtml(year)})
+              </div>
+            </td>
+            <td style="padding: 0 0 10px 0; text-align: right; vertical-align: bottom;">
+              <div style="font-size: 12px; font-weight: 700; color: #0078d4;">Report Year: ${escapeHtml(year)}</div>
+              <div style="font-size: 11px; color: #201f1e; margin-top: 2px;">
+                Active Months: <strong>${yearly.evaluatedMonthsCount} / 12</strong>
+              </div>
+              <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">Generated: ${today()}</div>
+            </td>
+          </tr>
+        </table>
+
+        <table style="width: 100%; border-collapse: collapse; background: #f8f9fa; border: 1px solid #e1dfdd; margin-bottom: 14px; font-size: 11px;">
+          <tr>
+            <td style="padding: 6px 10px; width: 50%; border-bottom: 1px solid #edebe9;">
+              <strong>Employee Name:</strong> ${escapeHtml(u.name || "")}
+            </td>
+            <td style="padding: 6px 10px; width: 50%; border-bottom: 1px solid #edebe9;">
+              <strong>User ID / Emp Code:</strong> ${escapeHtml(u.userId || "")} (${escapeHtml(u.employeeCode || "—")})
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 10px; border-bottom: 1px solid #edebe9;">
+              <strong>Job Title:</strong> ${escapeHtml(u.title || "—")}
+            </td>
+            <td style="padding: 6px 10px; border-bottom: 1px solid #edebe9;">
+              <strong>Department &amp; Office:</strong> ${escapeHtml(u.dept || "—")} (${escapeHtml(u.factory || "Corporate Office")})
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 10px;">
+              <strong>Line Manager:</strong> ${escapeHtml(u.managerUserId || "—")}
+            </td>
+            <td style="padding: 6px 10px;">
+              <strong>Appraisal Cycle:</strong> ${escapeHtml(u.appraisalCycle || "Annual")}
+            </td>
+          </tr>
+        </table>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">
+          <tr>
+            <td style="width: 50%; padding-right: 6px; vertical-align: top;">
+              <div style="background: #eff6fc; border: 1px solid #0078d4; border-radius: 4px; padding: 10px;">
+                <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #005a9e;">
+                  Yearly Avg Quantitative KPIs (80% Weight)
+                </div>
+                <div style="font-size: 18px; font-weight: 700; color: #0078d4; margin-top: 4px; font-family: monospace;">
+                  ${yearly.avgQuantPoints} / 80 pts (${yearly.avgQuantRawPct}%)
+                </div>
+                <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">
+                  Average Quantitative Achievement across ${yearly.evaluatedMonthsCount} Month(s)
+                </div>
+              </div>
+            </td>
+            <td style="width: 50%; padding-left: 6px; vertical-align: top;">
+              <div style="background: #e6f4f1; border: 1px solid #038387; border-radius: 4px; padding: 10px;">
+                <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #038387;">
+                  Yearly Avg Competency Self-Assessment
+                </div>
+                <div style="font-size: 18px; font-weight: 700; color: #038387; margin-top: 4px; font-family: monospace;">
+                  ${yearly.avgSelfQualRawPct > 0 ? `${yearly.avgSelfQualRawPct}%` : "—"}
+                </div>
+                <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">
+                  Based on Employee Self-Assessment Rubric Ratings (1–5 Scale)
+                </div>
+              </div>
+            </td>
+          </tr>
+        </table>
+
+        <div style="color:#201f1e; margin: 0 0 8px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
+          12-Month Quantitative KPI &amp; Self-Assessment Breakdown (${escapeHtml(year)}-01 to ${escapeHtml(year)}-12)
+        </div>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10px;">
+          <thead>
+            <tr style="background: #edebe9;">
+              <th style="padding: 6px 8px; text-align: left; border: 1px solid #c8c6c4; width: 90px;">Month</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">Quant Points (80)</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">Quant Achievement %</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 170px;">My Self-Assessment Score</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4;">Self-Appraisal Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${monthRowsHtml}
+          </tbody>
+          <tfoot>
+            <tr style="background: #eff6fc; font-weight: 700;">
+              <td style="padding: 7px 8px; border: 1px solid #c8c6c4; color: #005a9e;">YEARLY AVG</td>
+              <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #0078d4;">
+                ${yearly.avgQuantPoints} / 80
+              </td>
+              <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #0078d4;">
+                ${yearly.avgQuantRawPct}%
+              </td>
+              <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #038387;">
+                ${yearly.avgSelfQualRawPct > 0 ? `${yearly.avgSelfQualRawPct}%` : "—"}
+              </td>
+              <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-size: 9px; color: #605e5c;">
+                ${yearly.evaluatedMonthsCount} Active Month(s)
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <table style="width: 100%; border-collapse: collapse; margin-top: 26px; border-top: 1px dashed #c8c6c4; font-size: 11px; color: #605e5c;">
+          <tr>
+            <td style="padding-top: 14px; text-align: left;">Employee Signature: _______________________</td>
+            <td style="padding-top: 14px; text-align: right;">Date: _______________________</td>
+          </tr>
+        </table>
+      `
+        : `
         <table style="width: 100%; border-collapse: collapse; border-bottom: 2px solid #0078d4; margin-bottom: 14px;">
           <tr>
             <td style="padding: 0 0 10px 0; vertical-align: bottom;">
@@ -1763,7 +2345,7 @@ export default function App() {
                   ${yearly.avgQualPoints} / 20 pts
                 </div>
                 <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">
-                  Avg Behavioral: <strong>${yearly.avgQualRawPct}%</strong>
+                  Supervisor Avg: <strong>${yearly.avgQualRawPct}%</strong>${yearly.avgSelfQualRawPct > 0 ? ` · Self Avg: <strong>${yearly.avgSelfQualRawPct}%</strong>` : ""}
                 </div>
               </div>
             </td>
@@ -2368,15 +2950,18 @@ export default function App() {
   }
 
   function renderCompositeScoreStrip(u: UserProfile) {
+    const isEmployeeViewer = currentProfile?.role === "employee";
     const uid = u._uid || u.userId;
     const selectedMonth = empKpiFilterMonth[uid] || "ALL";
     const br = computeAppraisalBreakdown(u, selectedMonth);
     const qual = getEmployeeQualitative(u, selectedMonth);
+    const selfStats = computeSelfAssessmentStats(qual, selectedMonth);
     const wfInfo = APPRAISAL_WORKFLOW_LABELS[qual.workflowStatus || "draft"] || APPRAISAL_WORKFLOW_LABELS.draft;
     const activeLockMonth = selectedMonth === "ALL" ? qual.effectiveMonth || today().slice(0, 7) : selectedMonth;
     const monthLocked = isMonthFinalized(u, activeLockMonth);
     const reportYear = (activeLockMonth || selectedYearForReport || today().slice(0, 4)).slice(0, 4);
     const yearlySummary = computeYearlyAppraisalSummary(u, reportYear);
+    const quantBand = getPerformanceBand(br.quantRawPct);
 
     return (
       <div
@@ -2390,7 +2975,11 @@ export default function App() {
         <div className="card-header" style={{ flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span>Composite Appraisal Score (80% Quantitative + 20% Qualitative)</span>
+              <span>
+                {isEmployeeViewer
+                  ? "My Performance & Self-Assessment Summary"
+                  : "Composite Appraisal Score (80% Quantitative + 20% Qualitative)"}
+              </span>
               <span
                 style={{
                   fontSize: 11,
@@ -2403,19 +2992,21 @@ export default function App() {
               >
                 Effective Month: {selectedMonth === "ALL" ? "All Months" : selectedMonth}
               </span>
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  background: wfInfo.bg,
-                  color: wfInfo.color,
-                  border: `1px solid ${wfInfo.color}`,
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                }}
-              >
-                Status: {wfInfo.label}
-              </span>
+              {!isEmployeeViewer && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    background: wfInfo.bg,
+                    color: wfInfo.color,
+                    border: `1px solid ${wfInfo.color}`,
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                  }}
+                >
+                  Status: {wfInfo.label}
+                </span>
+              )}
               {monthLocked && (
                 <span
                   style={{
@@ -2431,7 +3022,7 @@ export default function App() {
                   🔒 Locked ({activeLockMonth})
                 </span>
               )}
-              {qual.recommendation && qual.recommendation !== "Pending Decision" && (
+              {!isEmployeeViewer && qual.recommendation && qual.recommendation !== "Pending Decision" && (
                 <span
                   style={{
                     fontSize: 11,
@@ -2462,13 +3053,15 @@ export default function App() {
               )}
             </div>
             <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Segment A: Quantitative KPIs (80%) + Segment B: Qualitative & Behavioral (20%)
+              {isEmployeeViewer
+                ? "Segment A: My Quantitative KPIs (80% Weight) + Segment B: My Competency Self-Assessment"
+                : "Segment A: Quantitative KPIs (80%) + Segment B: Qualitative & Behavioral (20%)"}
             </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
-              Filter Score by Effective Month:
+              Filter by Effective Month:
             </span>
             <button
               type="button"
@@ -2498,7 +3091,9 @@ export default function App() {
             >
               {generatingPdfFor === `yearly_${uid}`
                 ? "Generating Yearly PDF…"
-                : `⬇ Yearly Avg Report (${reportYear}: ${yearlySummary.avgTotalScore}%)`}
+                : isEmployeeViewer
+                  ? `⬇ Yearly Summary PDF (${reportYear})`
+                  : `⬇ Yearly Avg Report (${reportYear}: ${yearlySummary.avgTotalScore}%)`}
             </button>
           </div>
         </div>
@@ -2535,106 +3130,190 @@ export default function App() {
             </div>
           </div>
 
-          {/* Qualitative Segment Box */}
-          <div
-            style={{
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-default)",
-              borderRadius: "var(--radius-md)",
-              padding: "12px 14px",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
-              Segment B · Qualitative (20%)
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
-              <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-teal)" }}>
-                {br.qualPoints}
-              </span>
-              <span className="mono" style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                / 20 pts
-              </span>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              {br.isQualEvaluated ? (
-                <>
-                  Behavioral Score: <strong className="mono">{br.qualRawPct}%</strong> (
-                  {br.mode === "competencies" ? "1–5 Rubric" : "Direct Score"})
-                </>
-              ) : (
-                <span style={{ color: "var(--ms-orange)" }}>Pending Supervisor Evaluation</span>
-              )}
-            </div>
-          </div>
-
-          {/* Final Composite Appraisal Box */}
-          <div
-            style={{
-              background: "var(--bg-surface)",
-              border: `1px solid ${br.band.color}`,
-              borderRadius: "var(--radius-md)",
-              padding: "12px 14px",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
-              Final Appraisal Score (100%)
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
-              <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: br.band.color }}>
-                {br.totalScore}%
-              </span>
-              <span
+          {isEmployeeViewer ? (
+            <>
+              {/* Employee Self-Assessment Box (Never shows Supervisor's Marks) */}
+              <div
                 style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: br.band.color,
-                  background: br.band.bg,
-                  padding: "2px 8px",
-                  borderRadius: 4,
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border-default)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px",
                 }}
               >
-                {br.band.label}
-              </span>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Formula: {br.quantPoints} (Quant) + {br.qualPoints} (Qual)
-            </div>
-          </div>
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
+                  Segment B · My Self-Assessment
+                </div>
+                {selfStats.mode === "competencies" ? (
+                  <>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                      <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-teal)" }}>
+                        {selfStats.ratedCount > 0 ? `${selfStats.selfRawPct}%` : "—"}
+                      </span>
+                      <span className="mono" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                        ({selfStats.ratedCount}/{selfStats.totalCount} Rated)
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                      {selfStats.totalCount === 0
+                        ? "No competency rubric items assigned yet"
+                        : selfStats.ratedCount === selfStats.totalCount
+                          ? "All competencies self-rated"
+                          : "Rate your competencies (1–5) below"}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                      <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ms-teal)" }}>
+                        {qual.selfAppraisalNote && qual.selfAppraisalNote.trim() ? "Submitted" : "Pending Note"}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                      Submit your Self-Appraisal Note below
+                    </div>
+                  </>
+                )}
+              </div>
 
-          {/* Yearly Average Summary Box */}
-          <div
-            style={{
-              background: "var(--bg-surface)",
-              border: `1px solid ${yearlySummary.band.color}`,
-              borderRadius: "var(--radius-md)",
-              padding: "12px 14px",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
-              Yearly Average ({reportYear}) · {yearlySummary.evaluatedMonthsCount}/12 M
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
-              <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: yearlySummary.band.color }}>
-                {yearlySummary.avgTotalScore}%
-              </span>
-              <span
+              {/* Employee Yearly Quantitative & Self-Assessment Summary Box */}
+              <div
                 style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: yearlySummary.band.color,
-                  background: yearlySummary.band.bg,
-                  padding: "2px 8px",
-                  borderRadius: 4,
+                  background: "var(--bg-surface)",
+                  border: `1px solid ${quantBand.color}`,
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px",
                 }}
               >
-                {yearlySummary.band.label}
-              </span>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Avg Quant: <strong className="mono">{yearlySummary.avgQuantPoints}/80</strong> + Avg Qual:{" "}
-              <strong className="mono">{yearlySummary.avgQualPoints}/20</strong>
-            </div>
-          </div>
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
+                  Yearly Quantitative Avg ({reportYear})
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
+                  <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-blue)" }}>
+                    {yearlySummary.avgQuantPoints} / 80
+                  </span>
+                  <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: quantBand.color }}>
+                    ({yearlySummary.avgQuantRawPct}%)
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Avg Self-Assessment:{" "}
+                  <strong className="mono">
+                    {yearlySummary.avgSelfQualRawPct > 0 ? `${yearlySummary.avgSelfQualRawPct}%` : "—"}
+                  </strong>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Qualitative Segment Box (HR / Line Manager View) */}
+              <div
+                style={{
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border-default)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
+                  Segment B · Qualitative (20%)
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                  <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-teal)" }}>
+                    {br.qualPoints}
+                  </span>
+                  <span className="mono" style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                    / 20 pts
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                  {br.isQualEvaluated ? (
+                    <>
+                      Supervisor: <strong className="mono">{br.qualRawPct}%</strong> (
+                      {br.mode === "competencies" ? "1–5 Rubric" : "Direct Score"})
+                    </>
+                  ) : (
+                    <span style={{ color: "var(--ms-orange)" }}>Pending Supervisor Evaluation</span>
+                  )}
+                  {selfStats.mode === "competencies" && selfStats.ratedCount > 0 && (
+                    <div style={{ marginTop: 2, color: "var(--ms-blue-dark)" }}>
+                      Emp Self-Rating: <strong className="mono">{selfStats.selfRawPct}%</strong> ({selfStats.ratedCount}/
+                      {selfStats.totalCount})
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Final Composite Appraisal Box */}
+              <div
+                style={{
+                  background: "var(--bg-surface)",
+                  border: `1px solid ${br.band.color}`,
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
+                  Final Appraisal Score (100%)
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
+                  <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: br.band.color }}>
+                    {br.totalScore}%
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: br.band.color,
+                      background: br.band.bg,
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {br.band.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Formula: {br.quantPoints} (Quant) + {br.qualPoints} (Qual)
+                </div>
+              </div>
+
+              {/* Yearly Average Summary Box */}
+              <div
+                style={{
+                  background: "var(--bg-surface)",
+                  border: `1px solid ${yearlySummary.band.color}`,
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
+                  Yearly Average ({reportYear}) · {yearlySummary.evaluatedMonthsCount}/12 M
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
+                  <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: yearlySummary.band.color }}>
+                    {yearlySummary.avgTotalScore}%
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: yearlySummary.band.color,
+                      background: yearlySummary.band.bg,
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {yearlySummary.band.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Avg Quant: <strong className="mono">{yearlySummary.avgQuantPoints}/80</strong> + Avg Qual:{" "}
+                  <strong className="mono">{yearlySummary.avgQualPoints}/20</strong>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -3002,11 +3681,16 @@ export default function App() {
   }
 
   function renderEmployeeQualitativeSection(u: UserProfile, rawCanManage: boolean) {
+    const isEmployeeViewer = currentProfile?.role === "employee";
     const uid = u._uid || u.userId;
     const selectedFilterMonth = empKpiFilterMonth[uid] || "ALL";
     const qual = getEmployeeQualitative(u, selectedFilterMonth);
     const br = computeAppraisalBreakdown(u, selectedFilterMonth);
-    const activeEffectiveMonth = empNewCompMonth[uid] || qual.effectiveMonth || today().slice(0, 7);
+    const selfStats = computeSelfAssessmentStats(qual, selectedFilterMonth);
+    const activeEffectiveMonth =
+      empNewCompMonth[uid] ||
+      (selectedFilterMonth !== "ALL" ? selectedFilterMonth : qual.effectiveMonth) ||
+      today().slice(0, 7);
     const isMonthHrFinalized = isMonthFinalized(u, activeEffectiveMonth);
     const isLockedForManager = isMonthLockedForRole(u, activeEffectiveMonth, currentProfile?.role);
     const canManage = rawCanManage && !isLockedForManager;
@@ -3021,7 +3705,11 @@ export default function App() {
         <div className="card-header" style={{ flexWrap: "wrap", gap: 10 }}>
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span>Segment B: Qualitative & Behavioral Evaluation ({br.qualWeight}% of Total Appraisal)</span>
+              <span>
+                {isEmployeeViewer
+                  ? "Segment B: Behavioral Competency Self-Assessment & Self-Appraisal"
+                  : `Segment B: Qualitative & Behavioral Evaluation (${br.qualWeight}% of Total Appraisal)`}
+              </span>
               <span
                 className="mono"
                 style={{
@@ -3052,18 +3740,44 @@ export default function App() {
                 </span>
               )}
             </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Qualitative Score: <strong className="mono">{br.qualRawPct}%</strong> &nbsp;→&nbsp; Contributes{" "}
-              <strong className="mono" style={{ color: "var(--ms-teal)" }}>
-                {br.qualPoints} / {br.qualWeight} pts
-              </strong>
-              {qual.evaluatedBy && (
-                <span>
-                  {" "}
-                  · Evaluated by <strong>{qual.evaluatedBy}</strong> on {qual.evaluatedAt}
-                </span>
-              )}
-            </div>
+            {isEmployeeViewer ? (
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                {qual.mode === "competencies" ? (
+                  <>
+                    My Self-Assessment Score:{" "}
+                    <strong className="mono" style={{ color: "var(--ms-teal)" }}>
+                      {selfStats.ratedCount > 0 ? `${selfStats.selfRawPct}%` : "Not Rated Yet"}
+                    </strong>{" "}
+                    ({selfStats.ratedCount} / {selfStats.totalCount} competencies self-rated)
+                  </>
+                ) : (
+                  <span>Record your self-appraisal summary and accomplishments for this evaluation period below.</span>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                Supervisor Qualitative Score: <strong className="mono">{br.qualRawPct}%</strong> &nbsp;→&nbsp;
+                Contributes{" "}
+                <strong className="mono" style={{ color: "var(--ms-teal)" }}>
+                  {br.qualPoints} / {br.qualWeight} pts
+                </strong>
+                {selfStats.mode === "competencies" && selfStats.ratedCount > 0 && (
+                  <span>
+                    {" "}
+                    · Employee Self-Assessment:{" "}
+                    <strong className="mono" style={{ color: "var(--ms-blue-dark)" }}>
+                      {selfStats.selfRawPct}% ({selfStats.ratedCount}/{selfStats.totalCount})
+                    </strong>
+                  </span>
+                )}
+                {qual.evaluatedBy && (
+                  <span>
+                    {" "}
+                    · Evaluated by <strong>{qual.evaluatedBy}</strong> on {qual.evaluatedAt}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {rawCanManage && (
@@ -3076,7 +3790,7 @@ export default function App() {
                   onChange={(e) => {
                     const nextM = e.target.value || today().slice(0, 7);
                     setEmpNewCompMonth((prev) => ({ ...prev, [uid]: nextM }));
-                    saveEmployeeQualitative(u, { ...qual, effectiveMonth: nextM });
+                    setEmpKpiFilterMonth((prev) => ({ ...prev, [uid]: nextM }));
                   }}
                   style={{ width: "auto", padding: "3px 8px", fontSize: 12 }}
                 />
@@ -3153,7 +3867,8 @@ export default function App() {
           >
             🔒 Appraisal for Effective Month <strong>{activeEffectiveMonth}</strong> has been Finalized &amp; Approved by
             HR. Data inputs (Daily Work Log, Self-Appraisal edits, and Line Manager KPI/Qualitative edits) are locked for
-            this month. {currentProfile?.role === "hr" && 'As HR, you can click "Unlock Month" above if adjustments are needed.'}
+            this month.{" "}
+            {currentProfile?.role === "hr" && 'As HR, you can click "Unlock Month" above if adjustments are needed.'}
           </div>
         )}
 
@@ -3172,8 +3887,12 @@ export default function App() {
                 }}
               >
                 <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                  Rate each behavioral competency from <strong>1 (20%)</strong> to <strong>5 (100%)</strong> for Effective Month{" "}
-                  <strong className="mono" style={{ color: "var(--ms-teal)" }}>{activeEffectiveMonth}</strong>:
+                  Rate each behavioral competency from <strong>1 (20%)</strong> to <strong>5 (100%)</strong> for
+                  Effective Month{" "}
+                  <strong className="mono" style={{ color: "var(--ms-teal)" }}>
+                    {activeEffectiveMonth}
+                  </strong>
+                  :
                 </span>
                 <button
                   type="button"
@@ -3185,6 +3904,24 @@ export default function App() {
               </div>
             )}
 
+            {isEmployeeViewer && comps.length > 0 && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  marginBottom: 10,
+                  background: "var(--ms-blue-faint)",
+                  border: "1px solid var(--ms-blue-light)",
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                }}
+              >
+                <strong>Self-Assessment Instructions:</strong> Select your self-rating from <strong>1 (20%)</strong> to{" "}
+                <strong>5 (100%)</strong> for each assigned competency below. Your ratings are saved automatically to
+                your profile.
+              </div>
+            )}
+
             {comps.length === 0 ? (
               <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                 No behavioral competencies assigned yet.{" "}
@@ -3193,7 +3930,101 @@ export default function App() {
             ) : (
               comps.map((c) => {
                 const rInfo = RATING_SCALE[c.rating] || RATING_SCALE[3];
+                const selfVal = Number(c.selfRating) || 0;
+                const selfInfo = selfVal >= 1 && selfVal <= 5 ? RATING_SCALE[selfVal] : null;
                 const compMonth = c.effectiveMonth || qual.effectiveMonth || activeEffectiveMonth;
+
+                if (isEmployeeViewer) {
+                  // EMPLOYEE SELF-ASSESSMENT VIEW (Never exposes Supervisor's c.rating)
+                  return (
+                    <div key={c.id} className="kpi-card" style={{ marginTop: 8 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: 10,
+                          marginBottom: 8,
+                        }}
+                      >
+                        <div>
+                          <div
+                            className="kpi-title"
+                            style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
+                          >
+                            <span>{c.title}</span>
+                            <span
+                              className="mono"
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                background: "#e6f4f1",
+                                color: "#008272",
+                                border: "1px solid #b2dfdb",
+                                padding: "1px 7px",
+                                borderRadius: 4,
+                              }}
+                            >
+                              Effective Month: {compMonth}
+                            </span>
+                          </div>
+                          <div
+                            className="kpi-meta"
+                            style={{
+                              color: selfInfo ? selfInfo.color : "var(--text-secondary)",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {selfInfo
+                              ? `My Self-Rating: ${selfVal}/5 · ${selfInfo.shortLabel} (${selfInfo.pct}%)`
+                              : "My Self-Rating: Not rated yet — Select 1 to 5"}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginRight: 2 }}>
+                            Self-Rate:
+                          </span>
+                          {[1, 2, 3, 4, 5].map((star) => {
+                            const isSelected = selfVal === star;
+                            const sInfo = RATING_SCALE[star];
+                            return (
+                              <button
+                                key={star}
+                                type="button"
+                                disabled={isMonthHrFinalized}
+                                title={`Self-Rate ${star}: ${sInfo.label}`}
+                                onClick={() => handleEmployeeSelfRateCompetency(c.id, star, compMonth)}
+                                style={{
+                                  padding: "4px 10px",
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  borderRadius: 4,
+                                  border: isSelected ? `1px solid ${sInfo.color}` : "1px solid var(--border-default)",
+                                  background: isSelected ? sInfo.color : "var(--bg-surface)",
+                                  color: isSelected ? "#ffffff" : "var(--text-primary)",
+                                  cursor: isMonthHrFinalized ? "not-allowed" : "pointer",
+                                  opacity: isMonthHrFinalized && !isSelected ? 0.6 : 1,
+                                }}
+                              >
+                                {star}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="bar-track">
+                        <div
+                          className={`bar-fill ${selfInfo ? barColorClass(selfInfo.pct) : ""}`}
+                          style={{ width: `${selfInfo ? selfInfo.pct : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+
+                // HR / LINE MANAGER VIEW (Shows both Supervisor Rating and Employee Self-Rating)
                 return (
                   <div key={c.id} className="kpi-card" style={{ marginTop: 8 }}>
                     <div
@@ -3207,7 +4038,10 @@ export default function App() {
                       }}
                     >
                       <div>
-                        <div className="kpi-title" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <div
+                          className="kpi-title"
+                          style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
+                        >
                           <span>{c.title}</span>
                           <span
                             className="mono"
@@ -3223,9 +4057,24 @@ export default function App() {
                           >
                             Effective Month: {compMonth}
                           </span>
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              background: selfInfo ? "#eff6fc" : "#f3f2f1",
+                              color: selfInfo ? "#005a9e" : "#605e5c",
+                              border: `1px solid ${selfInfo ? "#c7e0f4" : "#e1dfdd"}`,
+                              padding: "1px 7px",
+                              borderRadius: 4,
+                            }}
+                          >
+                            Emp Self-Rating:{" "}
+                            {selfInfo ? `${selfVal}/5 · ${selfInfo.shortLabel} (${selfInfo.pct}%)` : "Not rated"}
+                          </span>
                         </div>
                         <div className="kpi-meta" style={{ color: rInfo.color, fontWeight: 600 }}>
-                          Rating: {c.rating}/5 · {rInfo.shortLabel} ({rInfo.pct}%)
+                          Supervisor Rating: {c.rating}/5 · {rInfo.shortLabel} ({rInfo.pct}%)
                         </div>
                       </div>
 
@@ -3274,10 +4123,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="bar-track">
-                      <div
-                        className={`bar-fill ${barColorClass(rInfo.pct)}`}
-                        style={{ width: `${rInfo.pct}%` }}
-                      />
+                      <div className={`bar-fill ${barColorClass(rInfo.pct)}`} style={{ width: `${rInfo.pct}%` }} />
                     </div>
                   </div>
                 );
@@ -3316,11 +4162,12 @@ export default function App() {
           </div>
         )}
 
-        {/* MODE 2: DIRECT QUALITATIVE SCORE INPUT */}
-        {qual.mode === "direct" && (
+        {/* MODE 2: DIRECT QUALITATIVE SCORE INPUT (Hidden from Employee Portal) */}
+        {qual.mode === "direct" && !isEmployeeViewer && (
           <div className="form-card" style={{ marginTop: 8 }}>
             <div className="card-title" style={{ marginBottom: 8 }}>
-              Direct Qualitative Marks ({br.qualWeight}% Segment · Effective Month: {qual.effectiveMonth || activeEffectiveMonth})
+              Direct Qualitative Marks ({br.qualWeight}% Segment · Effective Month:{" "}
+              {qual.effectiveMonth || activeEffectiveMonth})
             </div>
             <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
               Assign a direct qualitative score out of <strong>{br.qualWeight} points</strong> or as a percentage (
@@ -3329,16 +4176,14 @@ export default function App() {
             {canManage ? (
               <div className="form-grid" style={{ maxWidth: 640 }}>
                 <div className="form-field">
-                  <label style={{ color: "var(--ms-teal)", fontWeight: 700 }}>
-                    Effective Month
-                  </label>
+                  <label style={{ color: "var(--ms-teal)", fontWeight: 700 }}>Effective Month</label>
                   <input
                     type="month"
                     value={qual.effectiveMonth || activeEffectiveMonth}
                     onChange={(e) => {
                       const nextM = e.target.value || today().slice(0, 7);
                       setEmpNewCompMonth((prev) => ({ ...prev, [uid]: nextM }));
-                      saveEmployeeQualitative(u, { ...qual, mode: "direct", effectiveMonth: nextM });
+                      setEmpKpiFilterMonth((prev) => ({ ...prev, [uid]: nextM }));
                     }}
                   />
                 </div>
@@ -3383,32 +4228,47 @@ export default function App() {
               </div>
             ) : (
               <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "var(--ms-teal)" }}>
-                Assigned Score ({qual.effectiveMonth || activeEffectiveMonth}): {br.qualPoints} / {br.qualWeight} pts ({br.qualRawPct}%)
+                Assigned Score ({qual.effectiveMonth || activeEffectiveMonth}): {br.qualPoints} / {br.qualWeight} pts (
+                {br.qualRawPct}%)
               </div>
             )}
           </div>
         )}
 
         {/* SUPERVISOR COACHING, APPRAISAL WORKFLOW & EMPLOYEE SELF-APPRAISAL */}
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border-default)" }}>
-          <div className="card-title" style={{ marginBottom: 10 }}>
-            360° Appraisal Governance, Coaching Remarks & Sign-Off
-          </div>
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: "1px solid var(--border-default)",
+          }}
+        >
+          {!isEmployeeViewer && (
+            <div className="card-title" style={{ marginBottom: 10 }}>
+              360° Appraisal Governance, Coaching Remarks & Sign-Off
+            </div>
+          )}
           {canManage ? (
             <>
               <div className="form-grid" style={{ marginBottom: 12 }}>
                 <div className="form-field">
-                  <label style={{ color: "var(--ms-blue-dark)", fontWeight: 700 }}>
-                    Appraisal Workflow Stage
-                  </label>
+                  <label style={{ color: "var(--ms-blue-dark)", fontWeight: 700 }}>Appraisal Workflow Stage</label>
                   <select
                     value={qual.workflowStatus || "draft"}
                     onChange={(e) => {
                       const val = e.target.value as AppraisalWorkflowStatus;
+                      const updatedQual = { ...qual, workflowStatus: val };
                       const patchUser = (list: UserProfile[]) =>
                         list.map((item) =>
                           item._uid === u._uid
-                            ? { ...item, qualitative: { ...qual, workflowStatus: val } }
+                            ? {
+                                ...item,
+                                qualitative: updatedQual,
+                                qualitativeByMonth: {
+                                  ...(item.qualitativeByMonth || {}),
+                                  [activeEffectiveMonth]: updatedQual,
+                                },
+                              }
                             : item
                         );
                       setAllUsers(patchUser);
@@ -3432,10 +4292,18 @@ export default function App() {
                     value={qual.recommendation || "Pending Decision"}
                     onChange={(e) => {
                       const val = e.target.value;
+                      const updatedQual = { ...qual, recommendation: val };
                       const patchUser = (list: UserProfile[]) =>
                         list.map((item) =>
                           item._uid === u._uid
-                            ? { ...item, qualitative: { ...qual, recommendation: val } }
+                            ? {
+                                ...item,
+                                qualitative: updatedQual,
+                                qualitativeByMonth: {
+                                  ...(item.qualitativeByMonth || {}),
+                                  [activeEffectiveMonth]: updatedQual,
+                                },
+                              }
                             : item
                         );
                       setAllUsers(patchUser);
@@ -3476,10 +4344,18 @@ export default function App() {
                     value={qual.strengths || ""}
                     onChange={(e) => {
                       const val = e.target.value;
+                      const updatedQual = { ...qual, strengths: val };
                       const patchUser = (list: UserProfile[]) =>
                         list.map((item) =>
                           item._uid === u._uid
-                            ? { ...item, qualitative: { ...qual, strengths: val } }
+                            ? {
+                                ...item,
+                                qualitative: updatedQual,
+                                qualitativeByMonth: {
+                                  ...(item.qualitativeByMonth || {}),
+                                  [activeEffectiveMonth]: updatedQual,
+                                },
+                              }
                             : item
                         );
                       setAllUsers(patchUser);
@@ -3495,10 +4371,18 @@ export default function App() {
                     value={qual.improvements || ""}
                     onChange={(e) => {
                       const val = e.target.value;
+                      const updatedQual = { ...qual, improvements: val };
                       const patchUser = (list: UserProfile[]) =>
                         list.map((item) =>
                           item._uid === u._uid
-                            ? { ...item, qualitative: { ...qual, improvements: val } }
+                            ? {
+                                ...item,
+                                qualitative: updatedQual,
+                                qualitativeByMonth: {
+                                  ...(item.qualitativeByMonth || {}),
+                                  [activeEffectiveMonth]: updatedQual,
+                                },
+                              }
                             : item
                         );
                       setAllUsers(patchUser);
@@ -3512,13 +4396,7 @@ export default function App() {
                   type="button"
                   className="btn-primary btn-sm"
                   style={{ width: "auto", marginTop: 0, padding: "7px 16px" }}
-                  onClick={() =>
-                    saveEmployeeQualitative(
-                      u,
-                      { ...qual, effectiveMonth: activeEffectiveMonth },
-                      true
-                    )
-                  }
+                  onClick={() => saveEmployeeQualitative(u, { ...qual, effectiveMonth: activeEffectiveMonth }, true)}
                 >
                   Save Qualitative Evaluation & Decision ({activeEffectiveMonth})
                 </button>
@@ -3531,20 +4409,22 @@ export default function App() {
             </>
           ) : (
             <div>
-              <div className="form-grid" style={{ marginBottom: 14 }}>
-                <div className="purpose-block">
-                  <span className="section-label" style={{ marginBottom: 4 }}>
-                    Key Strengths (Manager / HR Feedback)
-                  </span>
-                  <div>{qual.strengths || "No remarks recorded yet."}</div>
+              {!isEmployeeViewer && (
+                <div className="form-grid" style={{ marginBottom: 14 }}>
+                  <div className="purpose-block">
+                    <span className="section-label" style={{ marginBottom: 4 }}>
+                      Key Strengths (Manager / HR Feedback)
+                    </span>
+                    <div>{qual.strengths || "No remarks recorded yet."}</div>
+                  </div>
+                  <div className="purpose-block">
+                    <span className="section-label" style={{ marginBottom: 4 }}>
+                      Areas for Growth & Coaching
+                    </span>
+                    <div>{qual.improvements || "No remarks recorded yet."}</div>
+                  </div>
                 </div>
-                <div className="purpose-block">
-                  <span className="section-label" style={{ marginBottom: 4 }}>
-                    Areas for Growth & Coaching
-                  </span>
-                  <div>{qual.improvements || "No remarks recorded yet."}</div>
-                </div>
-              </div>
+              )}
 
               {/* Employee Self-Appraisal & Sign-Off Box */}
               {currentProfile?.role === "employee" && currentProfile._uid === u._uid && (
@@ -3826,7 +4706,9 @@ export default function App() {
                   style={{ width: "auto", marginTop: 0 }}
                   onClick={() => openEmployeePerformanceDetails(u)}
                 >
-                  View Full Performance Details & Work Logs
+                  {currentProfile?.role === "hr"
+                    ? "View Details & Manage Work Logs (Edit / Delete)"
+                    : "View Full Performance Details & Work Logs"}
                 </button>
               )}
               {opts.canEditProfile && u.role === "employee" && !isEditing && (
@@ -5409,10 +6291,11 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>Behavioral Competency</th>
-                            <th style={{ width: 120 }}>Effective Month</th>
-                            <th style={{ width: 100 }}>Rating (1–5)</th>
-                            <th style={{ width: 100 }}>Score %</th>
-                            <th style={{ width: 160 }}>Evaluation Level</th>
+                            <th style={{ width: 115 }}>Effective Month</th>
+                            <th style={{ width: 135 }}>Emp Self-Rating</th>
+                            <th style={{ width: 125 }}>Supervisor Rating</th>
+                            <th style={{ width: 95 }}>Score %</th>
+                            <th style={{ width: 150 }}>Evaluation Level</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -5420,11 +6303,22 @@ export default function App() {
                             .filter((c) => !activeDetailMonth || !c.effectiveMonth || c.effectiveMonth === activeDetailMonth)
                             .map((c) => {
                               const rInfo = RATING_SCALE[c.rating] || RATING_SCALE[3];
+                              const sVal = Number(c.selfRating) || 0;
+                              const sInfo = sVal >= 1 && sVal <= 5 ? RATING_SCALE[sVal] : null;
                               return (
                                 <tr key={c.id}>
                                   <td style={{ fontWeight: 600 }}>{c.title}</td>
                                   <td className="mono" style={{ fontWeight: 700, color: "var(--ms-teal)" }}>
                                     {c.effectiveMonth || qual.effectiveMonth || "All Months"}
+                                  </td>
+                                  <td
+                                    className="mono"
+                                    style={{
+                                      fontWeight: 700,
+                                      color: sInfo ? sInfo.color : "var(--text-secondary)",
+                                    }}
+                                  >
+                                    {sInfo ? `${sVal} / 5 (${sInfo.pct}%)` : "Not rated"}
                                   </td>
                                   <td className="mono" style={{ fontWeight: 700 }}>
                                     {c.rating} / 5
@@ -5444,6 +6338,22 @@ export default function App() {
                     <strong className="mono" style={{ color: "var(--ms-teal)" }}>
                       {br.qualPoints} / {br.qualWeight} pts ({br.qualRawPct}%)
                     </strong>
+                  </div>
+                )}
+
+                {qual.selfAppraisalNote && (
+                  <div
+                    className="purpose-block"
+                    style={{
+                      marginTop: 12,
+                      background: "var(--ms-blue-faint)",
+                      borderColor: "var(--ms-blue-light)",
+                    }}
+                  >
+                    <span className="section-label" style={{ color: "var(--ms-blue-dark)", marginBottom: 4 }}>
+                      Employee Self-Appraisal Note {qual.selfSubmittedAt ? `(Submitted ${qual.selfSubmittedAt})` : ""}
+                    </span>
+                    <div>{qual.selfAppraisalNote}</div>
                   </div>
                 )}
 
@@ -5475,6 +6385,8 @@ export default function App() {
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
                       Displays both Work Date (Activity Date) and System Log Date (Submission Timestamp)
+                      {currentProfile.role === "hr" &&
+                        " · HR can Edit or Delete any work log entry below (KPI progress updates automatically)"}
                     </div>
                   </div>
 
@@ -5506,6 +6418,212 @@ export default function App() {
                   </div>
                 </div>
 
+                {hrWorkLogActionMsg && (
+                  <div className={`alert alert-${hrWorkLogActionMsg.type}`} style={{ marginBottom: 12 }}>
+                    {hrWorkLogActionMsg.text}
+                  </div>
+                )}
+
+                {/* HR Inline Work Log Editor */}
+                {currentProfile.role === "hr" &&
+                  hrEditingLogOrigDate &&
+                  (() => {
+                    const origLog = detailAllLogs.find((l) => l.date === hrEditingLogOrigDate);
+                    if (!origLog) return null;
+                    const empAssignedKpis = detailEmp.kpis || [];
+                    return (
+                      <div
+                        className="form-card"
+                        style={{
+                          marginBottom: 14,
+                          background: "var(--ms-blue-faint)",
+                          borderColor: "var(--ms-blue)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            marginBottom: 10,
+                          }}
+                        >
+                          <div className="card-title" style={{ color: "var(--ms-blue-dark)" }}>
+                            HR Work Log Editor — Editing Report for {origLog.date}
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-ghost btn-sm"
+                            onClick={() => setHrEditingLogOrigDate(null)}
+                          >
+                            ✕ Cancel Edit
+                          </button>
+                        </div>
+
+                        <div className="form-grid" style={{ maxWidth: 260, marginBottom: 12 }}>
+                          <div className="form-field">
+                            <label>Work Date (Activity Date)</label>
+                            <input
+                              type="date"
+                              value={hrEditLogDate}
+                              onChange={(e) => setHrEditLogDate(e.target.value)}
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text-primary)" }}>
+                          KPI Activity Entries ({hrEditLogEntries.length})
+                        </div>
+
+                        {hrEditLogEntries.length === 0 ? (
+                          <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
+                            No KPI entries in this work log. You can add one below or edit the Non-KPI work summary.
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                            {hrEditLogEntries.map((entry, eIdx) => (
+                              <div
+                                key={`${entry.kpiId}_${eIdx}`}
+                                style={{
+                                  background: "#ffffff",
+                                  border: "1px solid var(--border-default)",
+                                  borderRadius: 6,
+                                  padding: "10px 12px",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    marginBottom: 6,
+                                  }}
+                                >
+                                  <strong style={{ fontSize: 13 }}>{entry.kpiTitle}</strong>
+                                  <button
+                                    type="button"
+                                    className="x-btn"
+                                    onClick={() =>
+                                      setHrEditLogEntries((prev) => prev.filter((_, idx) => idx !== eIdx))
+                                    }
+                                  >
+                                    ✕ Remove Entry
+                                  </button>
+                                </div>
+                                <div className="form-grid">
+                                  <div className="form-field">
+                                    <label>Output Quantity ({entry.unit || "units"})</label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min={0}
+                                      value={entry.quantity}
+                                      onChange={(e) => {
+                                        const val = Number(e.target.value) || 0;
+                                        setHrEditLogEntries((prev) =>
+                                          prev.map((item, idx) => (idx === eIdx ? { ...item, quantity: val } : item))
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="form-field" style={{ gridColumn: "span 2" }}>
+                                    <label>Work Summary / Accomplishments</label>
+                                    <textarea
+                                      rows={2}
+                                      value={entry.notes || ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setHrEditLogEntries((prev) =>
+                                          prev.map((item, idx) => (idx === eIdx ? { ...item, notes: val } : item))
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {empAssignedKpis.length > 0 && (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              flexWrap: "wrap",
+                              marginBottom: 12,
+                            }}
+                          >
+                            <select
+                              style={{ width: "auto", minWidth: 220, fontSize: 12, padding: "5px 8px" }}
+                              value={hrAddEntryKpiId}
+                              onChange={(e) => setHrAddEntryKpiId(e.target.value)}
+                            >
+                              {empAssignedKpis.map((k) => (
+                                <option key={k.id} value={k.id}>
+                                  {k.title} ({k.unit})
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="btn-secondary btn-sm"
+                              onClick={() => {
+                                const kpi = empAssignedKpis.find((k) => k.id === hrAddEntryKpiId);
+                                if (!kpi) return;
+                                setHrEditLogEntries((prev) => [
+                                  ...prev,
+                                  {
+                                    kpiId: kpi.id,
+                                    kpiTitle: kpi.title,
+                                    unit: kpi.unit,
+                                    quantity: 0,
+                                    notes: "",
+                                  },
+                                ]);
+                              }}
+                            >
+                              + Add KPI Entry
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="form-row" style={{ marginBottom: 12 }}>
+                          <label style={{ color: "#038387", fontWeight: 700 }}>
+                            Additional / Non-KPI Daily Work Summary (Outside Assigned KPIs)
+                          </label>
+                          <textarea
+                            rows={2}
+                            placeholder="Summary of additional non-KPI tasks performed on this date…"
+                            value={hrEditLogOtherTasks}
+                            onChange={(e) => setHrEditLogOtherTasks(e.target.value)}
+                          />
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            className="btn-primary btn-sm"
+                            style={{ width: "auto", marginTop: 0 }}
+                            onClick={() => handleHrSaveEditWorkLog(detailEmp, origLog)}
+                          >
+                            Save Work Log Changes
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-ghost btn-sm"
+                            onClick={() => setHrEditingLogOrigDate(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                 {loadingDetailLogs ? (
                   <div className="alert alert-info" style={{ marginBottom: 0 }}>
                     Loading employee daily work reports…
@@ -5519,17 +6637,19 @@ export default function App() {
                     <table>
                       <thead>
                         <tr>
-                          <th style={{ width: 110 }}>Work Date</th>
-                          <th style={{ width: 110 }}>Log Date</th>
-                          <th style={{ width: 190 }}>KPI / Activity Category</th>
-                          <th style={{ width: 110 }}>Output</th>
+                          <th style={{ width: 105 }}>Work Date</th>
+                          <th style={{ width: 105 }}>Log Date</th>
+                          <th style={{ width: 185 }}>KPI / Activity Category</th>
+                          <th style={{ width: 105 }}>Output</th>
                           <th>Work Summary / Accomplishments</th>
+                          {currentProfile.role === "hr" && <th style={{ width: 170 }}>HR Actions</th>}
                         </tr>
                       </thead>
                       <tbody>
                         {filteredDetailLogs.map((log) => {
                           const logDateStr = getLogDate(log);
                           const displayRows = getWorkLogDisplayRows(log);
+                          const isConfirmingDelete = hrConfirmDeleteLogDate === log.date;
                           return displayRows.map((r, idx) => (
                             <tr key={`${log.date}_${idx}`}>
                               {idx === 0 && (
@@ -5569,7 +6689,78 @@ export default function App() {
                               <td className="mono" style={{ fontWeight: 600, color: "var(--ms-blue)" }}>
                                 {!r.isOther && r.quantity > 0 ? `+${r.quantity} ${r.unit}` : "—"}
                               </td>
-                              <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{r.notes || "—"}</td>
+                              <td style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                                  <span>{r.notes || "—"}</span>
+                                  {currentProfile.role === "hr" && displayRows.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="x-btn"
+                                      title="Remove this single entry from the day's work log"
+                                      style={{ flexShrink: 0 }}
+                                      onClick={() =>
+                                        handleHrDeleteSingleWorkLogRow(detailEmp, log, r.entryIdx, r.isOther)
+                                      }
+                                    >
+                                      ✕ Remove Row
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              {currentProfile.role === "hr" && idx === 0 && (
+                                <td
+                                  rowSpan={displayRows.length}
+                                  style={{
+                                    verticalAlign: "top",
+                                    borderLeft: "1px solid var(--border-default)",
+                                  }}
+                                >
+                                  {!isConfirmingDelete ? (
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                      <button
+                                        type="button"
+                                        className="btn-secondary btn-sm"
+                                        style={{ padding: "3px 8px", fontSize: 11 }}
+                                        onClick={() => handleHrStartEditWorkLog(log, detailEmp)}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn-danger btn-sm"
+                                        style={{ padding: "3px 8px", fontSize: 11 }}
+                                        onClick={() => setHrConfirmDeleteLogDate(log.date)}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--ms-red)" }}>
+                                        Delete {log.date} log?
+                                      </span>
+                                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                        <button
+                                          type="button"
+                                          className="btn-danger btn-sm"
+                                          style={{ padding: "2px 7px", fontSize: 10 }}
+                                          onClick={() => handleHrDeleteWorkLog(detailEmp, log)}
+                                        >
+                                          Confirm
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn-ghost btn-sm"
+                                          style={{ padding: "2px 7px", fontSize: 10 }}
+                                          onClick={() => setHrConfirmDeleteLogDate(null)}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                              )}
                             </tr>
                           ));
                         })}
@@ -5695,13 +6886,9 @@ export default function App() {
               const kpis = currentProfile.kpis || [];
               const kras = currentProfile.kras || [];
               const br = computeAppraisalBreakdown(currentProfile);
-              const peerPool =
-                employeesOnly.length > 0
-                  ? employeesOnly.map((emp) => {
-                      const b = computeAppraisalBreakdown(emp);
-                      return { ...emp, breakdown: b, performanceScore: b.totalScore };
-                    })
-                  : [{ ...currentProfile, breakdown: br, performanceScore: br.totalScore }];
+              const qual = getEmployeeQualitative(currentProfile);
+              const selfStats = computeSelfAssessmentStats(qual);
+              const quantBand = getPerformanceBand(br.quantRawPct);
 
               return (
                 <>
@@ -5800,24 +6987,30 @@ export default function App() {
 
                   <div className="stat-grid">
                     <div className="stat-chip">
-                      <div className="stat-chip-value" style={{ color: br.band.color }}>
-                        {br.totalScore}%
+                      <div className="stat-chip-value" style={{ color: quantBand.color }}>
+                        {br.quantRawPct}%
                       </div>
                       <div className="stat-chip-label">
-                        Total Score · {br.band.label}
+                        KPI Achievement · {quantBand.label}
                       </div>
                     </div>
                     <div className="stat-chip">
                       <div className="stat-chip-value" style={{ color: "var(--ms-blue)" }}>
                         {br.quantPoints}/80
                       </div>
-                      <div className="stat-chip-label">Quantitative (80%)</div>
+                      <div className="stat-chip-label">Quantitative Points (80%)</div>
                     </div>
                     <div className="stat-chip">
                       <div className="stat-chip-value" style={{ color: "var(--ms-teal)" }}>
-                        {br.qualPoints}/20
+                        {selfStats.mode === "competencies"
+                          ? selfStats.ratedCount > 0
+                            ? `${selfStats.selfRawPct}%`
+                            : `${selfStats.ratedCount}/${selfStats.totalCount}`
+                          : qual.selfAppraisalNote
+                            ? "Submitted"
+                            : "Pending"}
                       </div>
-                      <div className="stat-chip-label">Qualitative (20%)</div>
+                      <div className="stat-chip-label">My Self-Assessment</div>
                     </div>
                     <div className="stat-chip">
                       <div className="stat-chip-value">{kpis.length}</div>
@@ -5835,12 +7028,12 @@ export default function App() {
                   >
                     <div className="card" style={{ marginBottom: 0 }}>
                       <div className="card-header">
-                        <div className="card-title">My Performance Summary (80% Quantitative + 20% Qualitative)</div>
+                        <div className="card-title">My Performance & Self-Assessment Summary</div>
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                         <div style={{ fontSize: 13 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span>Segment A: Quantitative KPIs (80%)</span>
+                            <span>Segment A: Quantitative KPIs (80% Weight)</span>
                             <strong className="mono">
                               {br.quantPoints} / 80 pts ({br.quantRawPct}%)
                             </strong>
@@ -5856,23 +7049,27 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div style={{ fontSize: 13 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span>Segment B: Qualitative Competencies (20%)</span>
-                            <strong className="mono">
-                              {br.qualPoints} / 20 pts ({br.qualRawPct}%)
-                            </strong>
+                        {selfStats.mode === "competencies" && (
+                          <div style={{ fontSize: 13 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                              <span>Segment B: My Competency Self-Assessment</span>
+                              <strong className="mono">
+                                {selfStats.ratedCount > 0
+                                  ? `${selfStats.selfRawPct}% (${selfStats.ratedCount}/${selfStats.totalCount} Rated)`
+                                  : `0/${selfStats.totalCount} Rated`}
+                              </strong>
+                            </div>
+                            <div className="bar-track">
+                              <div
+                                className="bar-fill"
+                                style={{
+                                  width: `${Math.min(100, selfStats.selfRawPct)}%`,
+                                  background: "var(--ms-teal)",
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div className="bar-track">
-                            <div
-                              className="bar-fill"
-                              style={{
-                                width: `${Math.min(100, br.qualRawPct)}%`,
-                                background: "var(--ms-teal)",
-                              }}
-                            />
-                          </div>
-                        </div>
+                        )}
 
                         <div style={{ paddingTop: 6, display: "flex", gap: 8, flexWrap: "wrap" }}>
                           <button
@@ -5887,7 +7084,7 @@ export default function App() {
                             style={{ width: "auto" }}
                             onClick={() => setActiveTab("mykpis")}
                           >
-                            View My KPIs & Appraisal
+                            View My KPIs & Self-Assessment
                           </button>
                         </div>
                       </div>
@@ -5938,13 +7135,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-
-                  {/* Employee Bell Curve Position */}
-                  {renderBellCurveAndCharts(peerPool, "My Position on Bell Curve", {
-                    highlightUser: currentProfile,
-                    isEmployeeSelfView: true,
-                    showDeptChart: false,
-                  })}
                 </>
               );
             })()}
@@ -6733,16 +7923,16 @@ export default function App() {
           <div className="tab-panel">
             <div className="page-header">
               <div>
-                <div className="page-title">My KPIs & Performance Appraisal</div>
+                <div className="page-title">My KPIs & Self-Assessment</div>
                 <div className="page-sub">
-                  Track your Quantitative KPI targets and review your Qualitative Behavioral evaluation
+                  Track your Quantitative KPI targets and submit your Behavioral Competency Self-Assessment
                 </div>
               </div>
               <button
                 className="btn-secondary btn-sm"
                 onClick={() => downloadWorkLogPdf(currentProfile)}
               >
-                Download PDF Appraisal Report
+                Download My Performance Report
               </button>
             </div>
 
@@ -6890,23 +8080,13 @@ export default function App() {
               <div className="card-header">
                 <div className="card-title">Submit Daily Work Report</div>
               </div>
-              <div className="form-grid" style={{ maxWidth: 520, marginBottom: 16 }}>
+              <div className="form-grid" style={{ maxWidth: 260, marginBottom: 16 }}>
                 <div className="form-field">
                   <label>Work Date (Activity Date)</label>
                   <input
                     type="date"
                     value={worklogDate}
                     onChange={(e) => setWorklogDate(e.target.value)}
-                  />
-                </div>
-                <div className="form-field">
-                  <label>Log Date (Auto-Recorded Submission Date)</label>
-                  <input
-                    type="date"
-                    value={today()}
-                    disabled
-                    readOnly
-                    style={{ background: "var(--neutral-4)", color: "var(--text-secondary)", cursor: "not-allowed" }}
                   />
                 </div>
               </div>

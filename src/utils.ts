@@ -27,7 +27,8 @@ export interface KraItem {
 export interface CompetencyItem {
   id: string;
   title: string;
-  rating: number; // 1 to 5 scale (1=20%, 2=40%, 3=60%, 4=80%, 5=100%)
+  rating: number; // 1 to 5 scale (Supervisor / HR rating: 1=20%, 2=40%, 3=60%, 4=80%, 5=100%)
+  selfRating?: number; // 1 to 5 scale (Employee self-assessment rating)
   weight: number; // default 1 (equal weight) or custom weight
   note?: string;
   effectiveMonth?: string; // YYYY-MM (e.g. "2026-10")
@@ -105,6 +106,8 @@ export interface WorkLogEntry {
 }
 
 export interface WorkLogDoc {
+  _docId?: string;
+  _allDocIds?: string[];
   userId: string;
   userUid: string;
   userName: string;
@@ -118,6 +121,8 @@ export interface WorkLogDoc {
 
 export interface WorkLogDisplayRow {
   isOther: boolean;
+  kpiId?: string;
+  entryIdx?: number;
   kpiTitle: string;
   quantity: number;
   unit: string;
@@ -125,8 +130,10 @@ export interface WorkLogDisplayRow {
 }
 
 export function getWorkLogDisplayRows(log: WorkLogDoc): WorkLogDisplayRow[] {
-  const rows: WorkLogDisplayRow[] = (log.entries || []).map((e) => ({
+  const rows: WorkLogDisplayRow[] = (log.entries || []).map((e, idx) => ({
     isOther: false,
+    kpiId: e.kpiId,
+    entryIdx: idx,
     kpiTitle: e.kpiTitle,
     quantity: Number(e.quantity) || 0,
     unit: e.unit || "",
@@ -227,6 +234,48 @@ export function computeQualitativeRawPct(qual?: QualitativeAssessment, targetMon
   return Math.round(weightedSum / totalWeight);
 }
 
+export interface SelfAssessmentStats {
+  mode: "competencies" | "direct";
+  selfRawPct: number;
+  ratedCount: number;
+  totalCount: number;
+}
+
+export function computeSelfAssessmentStats(
+  qual?: QualitativeAssessment,
+  targetMonth?: string
+): SelfAssessmentStats {
+  const mode: "competencies" | "direct" = qual?.mode === "direct" ? "direct" : "competencies";
+  if (!qual || mode !== "competencies") {
+    return { mode, selfRawPct: 0, ratedCount: 0, totalCount: 0 };
+  }
+  const isMonthFiltered = Boolean(targetMonth && targetMonth !== "ALL" && targetMonth !== "all");
+  const allComps = qual.competencies || [];
+  const comps = isMonthFiltered
+    ? allComps.filter((c) => !c.effectiveMonth || c.effectiveMonth === targetMonth)
+    : allComps;
+  const totalCount = comps.length;
+  const ratedComps = comps.filter(
+    (c) => typeof c.selfRating === "number" && c.selfRating >= 1 && c.selfRating <= 5
+  );
+  const ratedCount = ratedComps.length;
+  if (ratedCount === 0) {
+    return { mode, selfRawPct: 0, ratedCount: 0, totalCount };
+  }
+  const totalWeight = ratedComps.reduce((s, c) => s + (Number(c.weight) || 1), 0) || 1;
+  const weightedSum = ratedComps.reduce((s, c) => {
+    const r = Math.max(1, Math.min(5, Number(c.selfRating) || 3));
+    const pct = (r / 5) * 100;
+    return s + pct * (Number(c.weight) || 1);
+  }, 0);
+  return {
+    mode,
+    selfRawPct: Math.round(weightedSum / totalWeight),
+    ratedCount,
+    totalCount,
+  };
+}
+
 export function computeAppraisalBreakdown(u: UserProfile, targetMonth?: string): AppraisalBreakdown {
   const quantWeight = 80;
   const qualWeight = 20;
@@ -322,6 +371,10 @@ export interface YearlyMonthRow {
   quantRawPct: number;
   qualPoints: number;
   qualRawPct: number;
+  selfQualRawPct: number;
+  selfRatedCount: number;
+  totalCompCount: number;
+  hasSelfNote: boolean;
   totalScore: number;
   band: PerformanceStatus;
   workflowStatus: AppraisalWorkflowStatus;
@@ -339,6 +392,7 @@ export interface YearlyAppraisalSummary {
   avgQualPoints: number;
   avgQuantRawPct: number;
   avgQualRawPct: number;
+  avgSelfQualRawPct: number;
   avgTotalScore: number;
   band: PerformanceStatus;
   months: YearlyMonthRow[];
@@ -367,6 +421,7 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
             (c) => !c.effectiveMonth || c.effectiveMonth === monthKey
           )) ||
           (qualForMonth.mode === "direct" && Number(qualForMonth.directScorePct) > 0) ||
+          Boolean(qualForMonth.selfAppraisalNote?.trim()) ||
           qualForMonth.workflowStatus === "hr_approved" ||
           qualForMonth.workflowStatus === "manager_reviewed" ||
           qualForMonth.workflowStatus === "self_submitted")
@@ -375,6 +430,7 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
     const hasMonthData = monthSpecificKpis.length > 0 || hasQualActivity;
 
     const br = computeAppraisalBreakdown(u, monthKey);
+    const selfStats = computeSelfAssessmentStats(qualForMonth || u.qualitative, monthKey);
     const wfStatus: AppraisalWorkflowStatus = qualForMonth?.workflowStatus || "draft";
     const rec = qualForMonth?.recommendation || "Pending Decision";
     const finalized = isMonthFinalized(u, monthKey);
@@ -389,6 +445,10 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
       quantRawPct: hasMonthData ? br.quantRawPct : 0,
       qualPoints: hasMonthData ? br.qualPoints : 0,
       qualRawPct: hasMonthData ? br.qualRawPct : 0,
+      selfQualRawPct: selfStats.selfRawPct,
+      selfRatedCount: selfStats.ratedCount,
+      totalCompCount: selfStats.totalCount,
+      hasSelfNote: Boolean(qualForMonth?.selfAppraisalNote?.trim()),
       totalScore: hasMonthData ? br.totalScore : 0,
       band: getPerformanceBand(hasMonthData ? br.totalScore : 0),
       workflowStatus: wfStatus,
@@ -402,6 +462,7 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
 
   if (evaluatedRows.length === 0 && (allKpis.length > 0 || u.qualitative)) {
     const fallbackBr = computeAppraisalBreakdown(u);
+    const fallbackSelf = computeSelfAssessmentStats(u.qualitative);
     const defaultM = (u.qualitative?.effectiveMonth || today().slice(0, 7)).slice(5, 7);
     const idx = Math.max(0, Math.min(11, (Number(defaultM) || 1) - 1));
     const finalized = u.qualitative?.workflowStatus === "hr_approved";
@@ -414,6 +475,10 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
       quantRawPct: fallbackBr.quantRawPct,
       qualPoints: fallbackBr.qualPoints,
       qualRawPct: fallbackBr.qualRawPct,
+      selfQualRawPct: fallbackSelf.selfRawPct,
+      selfRatedCount: fallbackSelf.ratedCount,
+      totalCompCount: fallbackSelf.totalCount,
+      hasSelfNote: Boolean(u.qualitative?.selfAppraisalNote?.trim()),
       totalScore: fallbackBr.totalScore,
       band: fallbackBr.band,
       workflowStatus: u.qualitative?.workflowStatus || "draft",
@@ -445,6 +510,11 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
   const avgTotalScore = count > 0 ? Math.round(avgQuantPoints + avgQualPoints) : 0;
   const avgQuantRawPct = Math.round((avgQuantPoints / 80) * 100);
   const avgQualRawPct = Math.round((avgQualPoints / 20) * 100);
+  const selfRatedMonths = evaluatedRows.filter((r) => r.selfRatedCount > 0);
+  const avgSelfQualRawPct =
+    selfRatedMonths.length > 0
+      ? Math.round(selfRatedMonths.reduce((s, r) => s + r.selfQualRawPct, 0) / selfRatedMonths.length)
+      : 0;
 
   return {
     year,
@@ -455,6 +525,7 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
     avgQualPoints,
     avgQuantRawPct,
     avgQualRawPct,
+    avgSelfQualRawPct,
     avgTotalScore,
     band: getPerformanceBand(avgTotalScore),
     months,
