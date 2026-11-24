@@ -29,6 +29,7 @@ import {
   KraItem,
   CompetencyItem,
   QualitativeAssessment,
+  WorkReportEvaluation,
   WorkLogDoc,
   WorkLogEntry,
   SystemSettings,
@@ -44,6 +45,7 @@ import {
   getDeadlineStatus,
   getLogDate,
   getWorkLogDisplayRows,
+  getEmployeeWorkReportEval,
   computeAppraisalBreakdown,
   getPerformanceBand,
   filterKpisByEffectiveMonth,
@@ -229,6 +231,14 @@ export default function App() {
   const [empNewCompMonth, setEmpNewCompMonth] = useState<Record<string, string>>({});
   const [qualSaveMsg, setQualSaveMsg] = useState<Record<string, string>>({});
   const [selfAppraisalMsg, setSelfAppraisalMsg] = useState<string>("");
+
+  // Work Report Evaluation Mark (Segment A remaining gap out of 80 — HR & Line Manager Only)
+  const [workReportMonthByUid, setWorkReportMonthByUid] = useState<Record<string, string>>({});
+  const [workReportScoreDraft, setWorkReportScoreDraft] = useState<Record<string, string>>({});
+  const [workReportRemarksDraft, setWorkReportRemarksDraft] = useState<Record<string, string>>({});
+  const [workReportSaveMsg, setWorkReportSaveMsg] = useState<
+    Record<string, { type: "info" | "success" | "danger"; text: string }>
+  >({});
 
   // HR All Accounts Search & PMS QC Filter state
   const [hrSearchQuery, setHrSearchQuery] = useState<string>("");
@@ -1224,6 +1234,164 @@ export default function App() {
     });
   }
 
+  // Handlers: Monthly Work Report Evaluation Mark (Segment A Remaining Gap out of 80 — HR & Line Manager Only)
+  async function handleSaveWorkReportEvaluation(
+    u: UserProfile,
+    effMonth: string,
+    maxPoints: number,
+    rawScoreStr: string,
+    remarks: string
+  ) {
+    if (!u._uid || !currentProfile) return;
+    if (currentProfile.role !== "hr" && currentProfile.role !== "manager") return;
+    const uid = u._uid;
+    const targetMonth = (effMonth || today().slice(0, 7)).slice(0, 7);
+
+    if (isMonthLockedForRole(u, targetMonth, currentProfile.role)) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: `Month ${targetMonth} is Finalized & Locked by HR. Only HR can update scores for this month.`,
+        },
+      }));
+      return;
+    }
+
+    if (maxPoints <= 0) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: "No remaining Segment A gap available because assigned KPIs already cover all 80 points.",
+        },
+      }));
+      return;
+    }
+
+    const parsed = Number(rawScoreStr);
+    if (rawScoreStr.trim() === "" || Number.isNaN(parsed) || parsed < 0 || parsed > maxPoints) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: `Please enter a valid mark between 0 and ${maxPoints}.`,
+        },
+      }));
+      return;
+    }
+
+    const clampedScore = Number(Math.max(0, Math.min(maxPoints, parsed)).toFixed(1));
+    const evalRecord: WorkReportEvaluation = {
+      score: clampedScore,
+      maxPoints,
+      effectiveMonth: targetMonth,
+      remarks: remarks.trim(),
+      evaluatedBy: `${currentProfile.name} (${ROLE_LABELS[currentProfile.role] || currentProfile.role})`,
+      evaluatedAt: today(),
+    };
+
+    const nextByMonth: Record<string, WorkReportEvaluation> = {
+      ...(u.workReportEvalByMonth || {}),
+      [targetMonth]: evalRecord,
+    };
+
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        workReportEval: evalRecord,
+        workReportEvalByMonth: nextByMonth,
+        lastUpdate: today(),
+      });
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "success",
+          text: `Saved Work Report Mark for ${targetMonth}: ${clampedScore} / ${maxPoints} pts (Hidden from Employee).`,
+        },
+      }));
+      setTimeout(() => {
+        setWorkReportSaveMsg((prev) => {
+          const copy = { ...prev };
+          delete copy[uid];
+          return copy;
+        });
+      }, 3500);
+      await fetchAllUsers();
+      if (currentProfile.role === "manager") {
+        await fetchTeamUsers(currentProfile.userId);
+      }
+    } catch (err: any) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: err?.message || "Failed to save Work Report evaluation mark.",
+        },
+      }));
+    }
+  }
+
+  async function handleClearWorkReportEvaluation(u: UserProfile, effMonth: string) {
+    if (!u._uid || !currentProfile) return;
+    if (currentProfile.role !== "hr" && currentProfile.role !== "manager") return;
+    const uid = u._uid;
+    const targetMonth = (effMonth || today().slice(0, 7)).slice(0, 7);
+
+    if (isMonthLockedForRole(u, targetMonth, currentProfile.role)) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: `Month ${targetMonth} is Finalized & Locked by HR.`,
+        },
+      }));
+      return;
+    }
+
+    const nextByMonth: Record<string, WorkReportEvaluation> = { ...(u.workReportEvalByMonth || {}) };
+    delete nextByMonth[targetMonth];
+    const remainingKeys = Object.keys(nextByMonth).sort();
+    const fallbackLatest = remainingKeys.length > 0 ? nextByMonth[remainingKeys[remainingKeys.length - 1]] : null;
+
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        workReportEval: fallbackLatest,
+        workReportEvalByMonth: nextByMonth,
+        lastUpdate: today(),
+      });
+      const draftKey = `${uid}_${targetMonth}`;
+      setWorkReportScoreDraft((prev) => {
+        const copy = { ...prev };
+        delete copy[draftKey];
+        return copy;
+      });
+      setWorkReportRemarksDraft((prev) => {
+        const copy = { ...prev };
+        delete copy[draftKey];
+        return copy;
+      });
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "info",
+          text: `Cleared Work Report Mark for ${targetMonth}.`,
+        },
+      }));
+      await fetchAllUsers();
+      if (currentProfile.role === "manager") {
+        await fetchTeamUsers(currentProfile.userId);
+      }
+    } catch (err: any) {
+      setWorkReportSaveMsg((prev) => ({
+        ...prev,
+        [uid]: {
+          type: "danger",
+          text: err?.message || "Failed to clear Work Report evaluation mark.",
+        },
+      }));
+    }
+  }
+
   // Handlers: Daily Work Log (with safe same-day entry merge so earlier entries on the same date are preserved)
   async function handleSubmitDailyWorkLog() {
     if (!currentProfile || !authUser) return;
@@ -1758,9 +1926,15 @@ export default function App() {
         <table style="width: 100%; border-collapse: collapse; background: #eff6fc; border: 1px solid #c7e0f4; margin-bottom: 18px; font-size: 11px;">
           <tr>
             <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 34%;">
-              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative (${br.quantWeight}% Weight)</div>
-              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${br.quantPoints} / ${br.quantWeight} pts</div>
-              <div style="font-size: 10px; color: #605e5c;">Raw KPI Achievement: ${br.quantRawPct}%</div>
+              <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative KPIs</div>
+              <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${
+                br.kpiMaxPoints > 0 ? `${br.kpiPoints} / ${br.kpiMaxPoints} pts` : "Daily Log Mode"
+              }</div>
+              <div style="font-size: 10px; color: #605e5c;">${
+                br.kpiMaxPoints > 0
+                  ? `KPI Achievement: ${br.kpiRawPct}%`
+                  : "Tracking via Daily Work Reports"
+              }</div>
             </td>
             <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
               <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment B: My Self-Assessment</div>
@@ -1792,7 +1966,11 @@ export default function App() {
             <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
               <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment A: Quantitative (${br.quantWeight}%)</div>
               <div style="font-size: 16px; font-family: monospace; font-weight: 700; color: #0078d4; margin-top: 2px;">${br.quantPoints} / ${br.quantWeight} pts</div>
-              <div style="font-size: 10px; color: #605e5c;">Raw KPI Achievement: ${br.quantRawPct}%</div>
+              <div style="font-size: 10px; color: #605e5c;">${
+                br.workReportMaxPoints > 0
+                  ? `KPI: ${br.kpiPoints}/${br.kpiMaxPoints} · Work Report: ${br.isWorkReportEvaluated ? `${br.workReportPoints}/${br.workReportMaxPoints}` : `Pending (0/${br.workReportMaxPoints})`}`
+                  : `Raw KPI Achievement: ${br.kpiRawPct}%`
+              }</div>
             </td>
             <td style="padding: 10px; border-right: 1px solid #c7e0f4; width: 33%;">
               <div style="font-size: 9px; text-transform: uppercase; color: #005a9e; font-weight: 700;">Segment B: Qualitative (${br.qualWeight}%)</div>
@@ -1978,6 +2156,41 @@ export default function App() {
           </tbody>
         </table>
 
+        ${
+          !isEmployeeViewer && br.workReportMaxPoints > 0
+            ? `<table style="width: 100%; border-collapse: collapse; background: #f6f2fb; border: 1px solid #d2c1e8; margin-bottom: 16px; font-size: 11px;">
+                <tr>
+                  <td style="padding: 8px 10px; width: 42%; border-right: 1px solid #d2c1e8; vertical-align: top;">
+                    <div style="font-size: 9px; text-transform: uppercase; color: #5c2d91; font-weight: 700;">
+                      Segment A · Work Report Evaluation (HR / Line Manager)
+                    </div>
+                    <div style="font-size: 15px; font-family: monospace; font-weight: 700; color: #5c2d91; margin-top: 2px;">
+                      ${br.isWorkReportEvaluated ? `${br.workReportPoints} / ${br.workReportMaxPoints} pts` : `Pending (0 / ${br.workReportMaxPoints} pts)`}
+                    </div>
+                    <div style="font-size: 9px; color: #605e5c; margin-top: 2px;">
+                      ${
+                        br.kpiMaxPoints > 0
+                          ? `Remaining Gap Allocation: 80 − ${br.kpiMaxPoints} KPI pts = ${br.workReportMaxPoints} pts`
+                          : `Full Segment A Allocation (No KPIs Assigned): 80 pts`
+                      }
+                    </div>
+                  </td>
+                  <td style="padding: 8px 10px; vertical-align: top;">
+                    <div style="font-size: 9px; text-transform: uppercase; color: #5c2d91; font-weight: 700; margin-bottom: 2px;">
+                      Work Report Analysis Remarks
+                    </div>
+                    <div style="color: #201f1e; white-space: pre-wrap;">${escapeHtml(br.workReportRemarks || "No remarks added.")}</div>
+                    ${
+                      br.workReportEvaluatedBy
+                        ? `<div style="font-size: 9px; color: #605e5c; margin-top: 4px;">Evaluated by ${escapeHtml(br.workReportEvaluatedBy)} on ${escapeHtml(br.workReportEvaluatedAt || "")}</div>`
+                        : ""
+                    }
+                  </td>
+                </tr>
+              </table>`
+            : ""
+        }
+
         ${segmentBSectionHtml}
 
         <div style="color:#201f1e; margin: 0 0 6px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #edebe9; padding-bottom: 4px;">
@@ -2102,18 +2315,18 @@ export default function App() {
           const wfBadge = APPRAISAL_WORKFLOW_LABELS[m.workflowStatus] || APPRAISAL_WORKFLOW_LABELS.draft;
           const rowBg = m.isEvaluated ? (i % 2 === 1 ? "#f8fbff" : "#ffffff") : "#fafafa";
           if (isEmployeeViewer) {
-            const qBand = getPerformanceBand(m.quantRawPct);
-            const hasEmpData = m.isEvaluated || m.selfRatedCount > 0 || m.hasSelfNote;
+            const hasKpiData = m.kpiMaxPoints > 0;
+            const qBand = getPerformanceBand(m.kpiRawPct);
             return `
               <tr style="background: ${rowBg};">
                 <td style="padding: 6px 8px; border: 1px solid #c8c6c4; font-family: monospace; font-weight: 700; color: #201f1e;">
                   ${escapeHtml(m.monthLabel)}
                 </td>
-                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${hasEmpData ? "#0078d4" : "#a19f9d"}; font-weight: 700;">
-                  ${hasEmpData ? `${m.quantPoints} / 80` : "—"}
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${hasKpiData ? "#0078d4" : "#a19f9d"}; font-weight: 700;">
+                  ${hasKpiData ? `${m.kpiPoints} / ${m.kpiMaxPoints}` : "—"}
                 </td>
-                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: ${hasEmpData ? qBand.color : "#a19f9d"};">
-                  ${hasEmpData ? `${m.quantRawPct}%` : "—"}
+                <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; font-weight: 700; color: ${hasKpiData ? qBand.color : "#a19f9d"};">
+                  ${hasKpiData ? `${m.kpiRawPct}%` : "—"}
                 </td>
                 <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${m.selfRatedCount > 0 ? "#038387" : "#a19f9d"}; font-weight: 700;">
                   ${m.selfRatedCount > 0 ? `${m.selfQualRawPct}% (${m.selfRatedCount}/${m.totalCompCount})` : m.totalCompCount > 0 ? `0/${m.totalCompCount} Rated` : "—"}
@@ -2131,6 +2344,11 @@ export default function App() {
               </td>
               <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${m.isEvaluated ? "#0078d4" : "#a19f9d"}; font-weight: 700;">
                 ${m.isEvaluated ? `${m.quantPoints} / 80 (${m.quantRawPct}%)` : "—"}
+                ${
+                  m.isEvaluated && m.workReportMaxPoints > 0
+                    ? `<div style="font-size: 8px; color: #5c2d91; font-weight: 600;">KPI ${m.kpiPoints}/${m.kpiMaxPoints} + WR ${m.workReportPoints}/${m.workReportMaxPoints}</div>`
+                    : ""
+                }
               </td>
               <td style="padding: 6px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: ${m.isEvaluated ? "#038387" : "#a19f9d"}; font-weight: 700;">
                 ${m.isEvaluated ? `${m.qualPoints} / 20 (${m.qualRawPct}%)` : "—"}
@@ -2207,13 +2425,21 @@ export default function App() {
             <td style="width: 50%; padding-right: 6px; vertical-align: top;">
               <div style="background: #eff6fc; border: 1px solid #0078d4; border-radius: 4px; padding: 10px;">
                 <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #005a9e;">
-                  Yearly Avg Quantitative KPIs (80% Weight)
+                  Yearly Avg Quantitative KPIs
                 </div>
                 <div style="font-size: 18px; font-weight: 700; color: #0078d4; margin-top: 4px; font-family: monospace;">
-                  ${yearly.avgQuantPoints} / 80 pts (${yearly.avgQuantRawPct}%)
+                  ${
+                    yearly.avgKpiMaxPoints > 0
+                      ? `${yearly.avgKpiPoints} / ${yearly.avgKpiMaxPoints} pts (${yearly.avgKpiRawPct}%)`
+                      : "Daily Log Mode"
+                  }
                 </div>
                 <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">
-                  Average Quantitative Achievement across ${yearly.evaluatedMonthsCount} Month(s)
+                  ${
+                    yearly.avgKpiMaxPoints > 0
+                      ? `Average KPI Achievement across Active Months`
+                      : `No Quantitative KPIs assigned in ${escapeHtml(year)}`
+                  }
                 </div>
               </div>
             </td>
@@ -2240,8 +2466,8 @@ export default function App() {
           <thead>
             <tr style="background: #edebe9;">
               <th style="padding: 6px 8px; text-align: left; border: 1px solid #c8c6c4; width: 90px;">Month</th>
-              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">Quant Points (80)</th>
-              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">Quant Achievement %</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">KPI Points</th>
+              <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 130px;">KPI Achievement %</th>
               <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4; width: 170px;">My Self-Assessment Score</th>
               <th style="padding: 6px 8px; text-align: center; border: 1px solid #c8c6c4;">Self-Appraisal Note</th>
             </tr>
@@ -2253,16 +2479,16 @@ export default function App() {
             <tr style="background: #eff6fc; font-weight: 700;">
               <td style="padding: 7px 8px; border: 1px solid #c8c6c4; color: #005a9e;">YEARLY AVG</td>
               <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #0078d4;">
-                ${yearly.avgQuantPoints} / 80
+                ${yearly.avgKpiMaxPoints > 0 ? `${yearly.avgKpiPoints} / ${yearly.avgKpiMaxPoints}` : "—"}
               </td>
               <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #0078d4;">
-                ${yearly.avgQuantRawPct}%
+                ${yearly.avgKpiMaxPoints > 0 ? `${yearly.avgKpiRawPct}%` : "—"}
               </td>
               <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-family: monospace; color: #038387;">
                 ${yearly.avgSelfQualRawPct > 0 ? `${yearly.avgSelfQualRawPct}%` : "—"}
               </td>
               <td style="padding: 7px 8px; border: 1px solid #c8c6c4; text-align: center; font-size: 9px; color: #605e5c;">
-                ${yearly.evaluatedMonthsCount} Active Month(s)
+                Employee Self-Report
               </td>
             </tr>
           </tfoot>
@@ -2332,7 +2558,11 @@ export default function App() {
                   ${yearly.avgQuantPoints} / 80 pts
                 </div>
                 <div style="font-size: 10px; color: #605e5c; margin-top: 2px;">
-                  Avg Achievement: <strong>${yearly.avgQuantRawPct}%</strong>
+                  Avg Achievement: <strong>${yearly.avgQuantRawPct}%</strong>${
+                    yearly.avgWorkReportMaxPoints > 0
+                      ? ` · WR Avg: <strong>${yearly.avgWorkReportPoints}</strong>`
+                      : ""
+                  }
                 </div>
               </div>
             </td>
@@ -2961,7 +3191,7 @@ export default function App() {
     const monthLocked = isMonthFinalized(u, activeLockMonth);
     const reportYear = (activeLockMonth || selectedYearForReport || today().slice(0, 4)).slice(0, 4);
     const yearlySummary = computeYearlyAppraisalSummary(u, reportYear);
-    const quantBand = getPerformanceBand(br.quantRawPct);
+    const quantBand = getPerformanceBand(isEmployeeViewer ? br.kpiRawPct : br.quantRawPct);
 
     return (
       <div
@@ -3115,19 +3345,66 @@ export default function App() {
             }}
           >
             <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
-              Segment A · Quantitative (80%)
+              {isEmployeeViewer ? "Segment A · My Quantitative KPIs" : "Segment A · Quantitative (80%)"}
             </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
-              <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-blue)" }}>
-                {br.quantPoints}
-              </span>
-              <span className="mono" style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                / 80 pts
-              </span>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Raw KPI Achievement: <strong className="mono">{br.quantRawPct}%</strong>
-            </div>
+            {isEmployeeViewer ? (
+              br.kpiMaxPoints > 0 ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                    <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-blue)" }}>
+                      {br.kpiPoints}
+                    </span>
+                    <span className="mono" style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      / {br.kpiMaxPoints} pts
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                    KPI Achievement: <strong className="mono">{br.kpiRawPct}%</strong>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ms-blue)" }}>
+                      Daily Work Report Mode
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                    Log your daily activities under Daily Work Report
+                  </div>
+                </>
+              )
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+                  <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-blue)" }}>
+                    {br.quantPoints}
+                  </span>
+                  <span className="mono" style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                    / 80 pts
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                  {br.workReportMaxPoints > 0 ? (
+                    <>
+                      KPI: <strong className="mono">{br.kpiPoints}/{br.kpiMaxPoints}</strong> · Work Report:{" "}
+                      <strong
+                        className="mono"
+                        style={{ color: br.isWorkReportEvaluated ? "#5c2d91" : "var(--ms-orange)" }}
+                      >
+                        {br.isWorkReportEvaluated
+                          ? `${br.workReportPoints}/${br.workReportMaxPoints}`
+                          : `Pending (0/${br.workReportMaxPoints})`}
+                      </strong>
+                    </>
+                  ) : (
+                    <>
+                      Raw KPI Achievement: <strong className="mono">{br.kpiRawPct}%</strong>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {isEmployeeViewer ? (
@@ -3186,15 +3463,19 @@ export default function App() {
                 }}
               >
                 <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: "var(--text-secondary)" }}>
-                  Yearly Quantitative Avg ({reportYear})
+                  Yearly KPI Avg ({reportYear})
                 </div>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
                   <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--ms-blue)" }}>
-                    {yearlySummary.avgQuantPoints} / 80
+                    {yearlySummary.avgKpiMaxPoints > 0
+                      ? `${yearlySummary.avgKpiPoints} / ${yearlySummary.avgKpiMaxPoints}`
+                      : "—"}
                   </span>
-                  <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: quantBand.color }}>
-                    ({yearlySummary.avgQuantRawPct}%)
-                  </span>
+                  {yearlySummary.avgKpiMaxPoints > 0 && (
+                    <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: quantBand.color }}>
+                      ({yearlySummary.avgKpiRawPct}%)
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
                   Avg Self-Assessment:{" "}
@@ -3319,20 +3600,245 @@ export default function App() {
     );
   }
 
+  function renderWorkReportEvaluationBox(
+    u: UserProfile,
+    effMonth: string,
+    rawCanManage: boolean,
+    onChangeMonth?: (nextMonth: string) => void
+  ) {
+    // Strict privacy: Employees can NEVER view or edit Work Report Evaluation Marks
+    if (!rawCanManage || !currentProfile || currentProfile.role === "employee") return null;
+    if (currentProfile.role !== "hr" && currentProfile.role !== "manager") return null;
+
+    const uid = u._uid || u.userId;
+    const activeMonth = (effMonth || today().slice(0, 7)).slice(0, 7);
+    const brMonth = computeAppraisalBreakdown(u, activeMonth);
+    if (brMonth.workReportMaxPoints <= 0) return null;
+
+    const existingEval = getEmployeeWorkReportEval(u, activeMonth);
+    const isLocked = isMonthLockedForRole(u, activeMonth, currentProfile.role);
+    const canEdit = !isLocked;
+    const draftKey = `${uid}_${activeMonth}`;
+
+    const scoreVal =
+      workReportScoreDraft[draftKey] !== undefined
+        ? workReportScoreDraft[draftKey]
+        : existingEval && typeof existingEval.score === "number"
+          ? String(existingEval.score)
+          : "";
+    const remarksVal =
+      workReportRemarksDraft[draftKey] !== undefined
+        ? workReportRemarksDraft[draftKey]
+        : existingEval?.remarks || "";
+    const parsedScore = Number(scoreVal);
+    const previewPct =
+      scoreVal.trim() !== "" && !Number.isNaN(parsedScore) && brMonth.workReportMaxPoints > 0
+        ? Math.round((Math.max(0, Math.min(brMonth.workReportMaxPoints, parsedScore)) / brMonth.workReportMaxPoints) * 100)
+        : null;
+    const saveMsg = workReportSaveMsg[uid];
+
+    return (
+      <div
+        className="form-card"
+        style={{
+          marginTop: 12,
+          marginBottom: 12,
+          background: "#f6f2fb",
+          borderColor: "#c5b0e0",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+            marginBottom: 10,
+          }}
+        >
+          <div>
+            <div
+              className="card-title"
+              style={{ color: "#5c2d91", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+            >
+              <span>Monthly Work Report Evaluation Mark</span>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  background: "#5c2d91",
+                  color: "#ffffff",
+                  padding: "2px 7px",
+                  borderRadius: 4,
+                }}
+              >
+                HR &amp; Line Manager Only · Hidden from Employee
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 3 }}>
+              {brMonth.kpiMaxPoints === 0 ? (
+                <>
+                  No Quantitative KPIs assigned for <strong className="mono">{activeMonth}</strong> → Full{" "}
+                  <strong className="mono" style={{ color: "#5c2d91" }}>
+                    80 / 80 pts
+                  </strong>{" "}
+                  allocated to Work Report Evaluation.
+                </>
+              ) : (
+                <>
+                  Assigned KPIs cover <strong className="mono">{brMonth.kpiMaxPoints} pts</strong> → Remaining Segment A
+                  gap (<strong className="mono">80 − {brMonth.kpiMaxPoints}</strong>) ={" "}
+                  <strong className="mono" style={{ color: "#5c2d91" }}>
+                    {brMonth.workReportMaxPoints} pts
+                  </strong>{" "}
+                  allocated to Work Report Evaluation.
+                </>
+              )}
+            </div>
+          </div>
+
+          <div style={{ textAlign: "right" }}>
+            <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: "#5c2d91" }}>
+              {brMonth.isWorkReportEvaluated
+                ? `${brMonth.workReportPoints} / ${brMonth.workReportMaxPoints} pts`
+                : `Not Marked (0 / ${brMonth.workReportMaxPoints})`}
+            </div>
+            {existingEval?.evaluatedBy && (
+              <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+                By {existingEval.evaluatedBy} · {existingEval.evaluatedAt || ""}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {isLocked && (
+          <div className="alert alert-danger" style={{ marginBottom: 10 }}>
+            🔒 Month <strong>{activeMonth}</strong> is Finalized &amp; Locked by HR. Only HR can modify Work Report
+            marks for this month.
+          </div>
+        )}
+
+        {saveMsg && (
+          <div className={`alert alert-${saveMsg.type}`} style={{ marginBottom: 10 }}>
+            {saveMsg.text}
+          </div>
+        )}
+
+        <div className="form-grid" style={{ alignItems: "end" }}>
+          <div className="form-field">
+            <label style={{ color: "#5c2d91", fontWeight: 700 }}>Evaluation Month</label>
+            <input
+              type="month"
+              value={activeMonth}
+              onChange={(e) => {
+                const nextM = e.target.value || today().slice(0, 7);
+                if (onChangeMonth) {
+                  onChangeMonth(nextM);
+                } else {
+                  setWorkReportMonthByUid((prev) => ({ ...prev, [uid]: nextM }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="form-field">
+            <label style={{ fontWeight: 700 }}>
+              Work Report Mark (0 – {brMonth.workReportMaxPoints} pts)
+              {previewPct !== null && (
+                <span className="mono" style={{ marginLeft: 6, color: "#5c2d91" }}>
+                  ({previewPct}%)
+                </span>
+              )}
+            </label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="number"
+                min={0}
+                max={brMonth.workReportMaxPoints}
+                step="0.5"
+                disabled={!canEdit}
+                placeholder={`0 to ${brMonth.workReportMaxPoints}`}
+                value={scoreVal}
+                onChange={(e) =>
+                  setWorkReportScoreDraft((prev) => ({
+                    ...prev,
+                    [draftKey]: e.target.value,
+                  }))
+                }
+              />
+              <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "#5c2d91", whiteSpace: "nowrap" }}>
+                / {brMonth.workReportMaxPoints} pts
+              </span>
+            </div>
+          </div>
+
+          <div className="form-field" style={{ gridColumn: "span 2" }}>
+            <label>Work Report Analysis Remarks (Optional · Internal HR / Manager Note)</label>
+            <input
+              disabled={!canEdit}
+              placeholder="e.g. Evaluated monthly Daily Work Reports; consistent delivery on non-KPI tasks"
+              value={remarksVal}
+              onChange={(e) =>
+                setWorkReportRemarksDraft((prev) => ({
+                  ...prev,
+                  [draftKey]: e.target.value,
+                }))
+              }
+            />
+          </div>
+        </div>
+
+        {canEdit && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <button
+              type="button"
+              className="btn-primary btn-sm"
+              style={{ width: "auto", marginTop: 0, background: "#5c2d91", borderColor: "#5c2d91" }}
+              onClick={() =>
+                handleSaveWorkReportEvaluation(
+                  u,
+                  activeMonth,
+                  brMonth.workReportMaxPoints,
+                  scoreVal,
+                  remarksVal
+                )
+              }
+            >
+              Save Work Report Mark ({activeMonth})
+            </button>
+            {existingEval && (
+              <button
+                type="button"
+                className="btn-ghost btn-sm"
+                style={{ width: "auto", marginTop: 0, color: "#a4262c" }}
+                onClick={() => handleClearWorkReportEvaluation(u, activeMonth)}
+              >
+                Clear Mark
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderEmployeeKpiSection(u: UserProfile, rawCanManage: boolean) {
     const allKpis = u.kpis || [];
     const uid = u._uid || "";
     const selectedMonth = empKpiFilterMonth[uid] || "ALL";
     const defaultMonth = today().slice(0, 7);
-    const activeKpiMonth = selectedMonth === "ALL" ? defaultMonth : selectedMonth;
+    const activeKpiMonth =
+      selectedMonth === "ALL" ? workReportMonthByUid[uid] || defaultMonth : selectedMonth;
     const isLockedForManager = isMonthLockedForRole(u, activeKpiMonth, currentProfile?.role);
     const canManage = rawCanManage && !isLockedForManager;
     const kpis =
       selectedMonth === "ALL"
         ? allKpis
         : allKpis.filter((k) => !k.effectiveMonth || k.effectiveMonth === selectedMonth);
-    const totalAssignedWeight = kpis.reduce((sum, k) => sum + (Number(k.weight) || 0), 0);
-    const isWeightExact100 = totalAssignedWeight === 100;
+    const totalAssignedWeight = Number(
+      kpis.reduce((sum, k) => sum + (Number(k.weight) || 0), 0).toFixed(1)
+    );
     const br = computeAppraisalBreakdown(u, selectedMonth);
     const draft = empKpiInputs[uid] || {
       title: "",
@@ -3357,7 +3863,7 @@ export default function App() {
         <div className="card-header" style={{ flexWrap: "wrap", gap: 8 }}>
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span>Segment A: Quantitative KPIs ({br.quantWeight}% of Total Appraisal)</span>
+              <span>Segment A: Quantitative KPIs &amp; Work Report Evaluation ({br.quantWeight} pts Total)</span>
               <span
                 style={{
                   fontSize: 11,
@@ -3370,26 +3876,57 @@ export default function App() {
               >
                 Showing: {selectedMonth === "ALL" ? `All Months (${allKpis.length})` : `${selectedMonth} (${kpis.length})`}
               </span>
-              {kpis.length > 0 && (
+              <span
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: br.workReportMaxPoints === 0 ? "#dff6dd" : "#eff6fc",
+                  color: br.workReportMaxPoints === 0 ? "#107c10" : "#005a9e",
+                  border: `1px solid ${br.workReportMaxPoints === 0 ? "#107c10" : "#c7e0f4"}`,
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                }}
+              >
+                {totalAssignedWeight > 80
+                  ? `KPI Weight: ${totalAssignedWeight}% (Scaled to 80 pts)`
+                  : `KPI Marks Allocated: ${totalAssignedWeight} / 80 pts`}
+              </span>
+              {br.workReportMaxPoints > 0 && (
                 <span
                   className="mono"
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    background: isWeightExact100 ? "#dff6dd" : "#fff4ce",
-                    color: isWeightExact100 ? "#107c10" : "#ca5010",
-                    border: `1px solid ${isWeightExact100 ? "#107c10" : "#ca5010"}`,
+                    background: "#f6f2fb",
+                    color: "#5c2d91",
+                    border: "1px solid #c5b0e0",
                     padding: "2px 8px",
                     borderRadius: 4,
                   }}
                 >
-                  Total KPI Weight: {totalAssignedWeight}% / 100%{" "}
-                  {isWeightExact100 ? "✓ Balanced" : "(Recommended: 100%)"}
+                  Work Report Gap: {br.workReportMaxPoints} pts
                 </span>
               )}
             </div>
             <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Weighted KPI Score: <strong className="mono">{br.quantRawPct}%</strong> &nbsp;→&nbsp; Contributes{" "}
+              {br.kpiMaxPoints > 0 ? (
+                <>
+                  KPI: <strong className="mono">{br.kpiPoints} / {br.kpiMaxPoints} pts</strong> ({br.kpiRawPct}%)
+                </>
+              ) : (
+                <>KPI: <strong className="mono">0 / 0 pts</strong></>
+              )}
+              {br.workReportMaxPoints > 0 && (
+                <>
+                  {" "}
+                  + Work Report:{" "}
+                  <strong className="mono" style={{ color: "#5c2d91" }}>
+                    {br.workReportPoints} / {br.workReportMaxPoints} pts
+                  </strong>
+                </>
+              )}{" "}
+              &nbsp;→&nbsp; Segment A Total:{" "}
               <strong className="mono" style={{ color: "var(--ms-blue)" }}>
                 {br.quantPoints} / {br.quantWeight} pts
               </strong>
@@ -3405,8 +3942,8 @@ export default function App() {
         {kpis.length === 0 && (
           <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
             {selectedMonth === "ALL"
-              ? "No Quantitative KPIs have been assigned yet."
-              : `No Quantitative KPIs found for Effective Month ${selectedMonth}.`}
+              ? "No Quantitative KPIs assigned. You can grade this employee's Daily Work Reports out of the full 80 points below."
+              : `No Quantitative KPIs found for Effective Month ${selectedMonth}. Full 80 points are available for Work Report Evaluation below.`}
           </p>
         )}
         {kpis.map((k) => {
@@ -3628,10 +4165,10 @@ export default function App() {
                 </select>
               </div>
               <div className="form-field">
-                <label>Weight % (Recommended total = 100%)</label>
+                <label>KPI Marks / Weight (Out of 80 · Gap → Work Report)</label>
                 <input
                   type="number"
-                  placeholder={String(Math.max(0, 100 - totalAssignedWeight) || 25)}
+                  placeholder={String(Math.max(0, 80 - totalAssignedWeight) || 20)}
                   value={draft.weight}
                   onChange={(e) => updateDraft({ weight: e.target.value })}
                 />
@@ -3675,6 +4212,14 @@ export default function App() {
               Add Quantitative KPI
             </button>
           </div>
+        )}
+        {renderWorkReportEvaluationBox(
+          u,
+          activeKpiMonth,
+          rawCanManage,
+          selectedMonth === "ALL"
+            ? (m) => setWorkReportMonthByUid((prev) => ({ ...prev, [uid]: m }))
+            : (m) => setEmpKpiFilterMonth((prev) => ({ ...prev, [uid]: m }))
         )}
       </div>
     );
@@ -6140,7 +6685,23 @@ export default function App() {
                     {br.quantPoints} <span style={{ fontSize: 13, fontWeight: 500 }}>/ {br.quantWeight} pts</span>
                   </div>
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-                    Raw KPI Achievement: <strong className="mono">{br.quantRawPct}%</strong> ({kpis.length} KPIs)
+                    {br.workReportMaxPoints > 0 ? (
+                      <>
+                        KPI: <strong className="mono">{br.kpiPoints}/{br.kpiMaxPoints}</strong> · Work Report:{" "}
+                        <strong
+                          className="mono"
+                          style={{ color: br.isWorkReportEvaluated ? "#5c2d91" : "var(--ms-orange)" }}
+                        >
+                          {br.isWorkReportEvaluated
+                            ? `${br.workReportPoints}/${br.workReportMaxPoints}`
+                            : `Pending (0/${br.workReportMaxPoints})`}
+                        </strong>
+                      </>
+                    ) : (
+                      <>
+                        Raw KPI Achievement: <strong className="mono">{br.kpiRawPct}%</strong> ({kpis.length} KPIs)
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -6191,7 +6752,9 @@ export default function App() {
                     1. Segment A — Quantitative KPIs Breakdown ({br.quantWeight}% Weight)
                   </div>
                   <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: "var(--ms-blue)" }}>
-                    {br.quantPoints} / {br.quantWeight} pts
+                    {br.workReportMaxPoints > 0
+                      ? `KPI ${br.kpiPoints}/${br.kpiMaxPoints} + Work Report ${br.workReportPoints}/${br.workReportMaxPoints} = ${br.quantPoints} / ${br.quantWeight} pts`
+                      : `${br.quantPoints} / ${br.quantWeight} pts`}
                   </span>
                 </div>
                 {kpis.length === 0 ? (
@@ -6422,6 +6985,14 @@ export default function App() {
                   <div className={`alert alert-${hrWorkLogActionMsg.type}`} style={{ marginBottom: 12 }}>
                     {hrWorkLogActionMsg.text}
                   </div>
+                )}
+
+                {/* HR & Line Manager Monthly Work Report Evaluation (Hidden from Employee) */}
+                {renderWorkReportEvaluationBox(
+                  detailEmp,
+                  detailMonth || today().slice(0, 7),
+                  currentProfile.role === "hr" || currentProfile.role === "manager",
+                  (nextM) => setDetailMonth(nextM)
                 )}
 
                 {/* HR Inline Work Log Editor */}
@@ -6888,7 +7459,7 @@ export default function App() {
               const br = computeAppraisalBreakdown(currentProfile);
               const qual = getEmployeeQualitative(currentProfile);
               const selfStats = computeSelfAssessmentStats(qual);
-              const quantBand = getPerformanceBand(br.quantRawPct);
+              const quantBand = getPerformanceBand(br.kpiRawPct);
 
               return (
                 <>
@@ -6987,18 +7558,20 @@ export default function App() {
 
                   <div className="stat-grid">
                     <div className="stat-chip">
-                      <div className="stat-chip-value" style={{ color: quantBand.color }}>
-                        {br.quantRawPct}%
+                      <div className="stat-chip-value" style={{ color: br.kpiMaxPoints > 0 ? quantBand.color : "var(--ms-blue)" }}>
+                        {br.kpiMaxPoints > 0 ? `${br.kpiRawPct}%` : "Daily Log"}
                       </div>
                       <div className="stat-chip-label">
-                        KPI Achievement · {quantBand.label}
+                        {br.kpiMaxPoints > 0 ? `KPI Achievement · ${quantBand.label}` : "Daily Work Report Mode"}
                       </div>
                     </div>
                     <div className="stat-chip">
                       <div className="stat-chip-value" style={{ color: "var(--ms-blue)" }}>
-                        {br.quantPoints}/80
+                        {br.kpiMaxPoints > 0 ? `${br.kpiPoints}/${br.kpiMaxPoints}` : "—"}
                       </div>
-                      <div className="stat-chip-label">Quantitative Points (80%)</div>
+                      <div className="stat-chip-label">
+                        {br.kpiMaxPoints > 0 ? `KPI Points (${br.kpiMaxPoints} Max)` : "No KPIs Assigned"}
+                      </div>
                     </div>
                     <div className="stat-chip">
                       <div className="stat-chip-value" style={{ color: "var(--ms-teal)" }}>
@@ -7033,16 +7606,18 @@ export default function App() {
                       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                         <div style={{ fontSize: 13 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span>Segment A: Quantitative KPIs (80% Weight)</span>
+                            <span>Segment A: My Quantitative KPIs</span>
                             <strong className="mono">
-                              {br.quantPoints} / 80 pts ({br.quantRawPct}%)
+                              {br.kpiMaxPoints > 0
+                                ? `${br.kpiPoints} / ${br.kpiMaxPoints} pts (${br.kpiRawPct}%)`
+                                : "Daily Work Report Mode"}
                             </strong>
                           </div>
                           <div className="bar-track">
                             <div
                               className="bar-fill bar-green"
                               style={{
-                                width: `${Math.min(100, br.quantRawPct)}%`,
+                                width: `${br.kpiMaxPoints > 0 ? Math.min(100, br.kpiRawPct) : 0}%`,
                                 background: "var(--ms-blue)",
                               }}
                             />
@@ -7637,9 +8212,10 @@ export default function App() {
             {(() => {
               const totalEmps = employeesOnly.length;
               const withKpisCount = employeesOnly.filter((e) => (e.kpis || []).length > 0).length;
-              const weight100Count = employeesOnly.filter(
-                (e) => (e.kpis || []).reduce((s, k) => s + (Number(k.weight) || 0), 0) === 100
-              ).length;
+              const weight100Count = employeesOnly.filter((e) => {
+                const brE = computeAppraisalBreakdown(e);
+                return brE.workReportMaxPoints === 0 || brE.isWorkReportEvaluated;
+              }).length;
               const qualEvalCount = employeesOnly.filter((e) => computeAppraisalBreakdown(e).isQualEvaluated).length;
               const hrFinalizedCount = employeesOnly.filter(
                 (e) => e.qualitative?.workflowStatus === "hr_approved"
@@ -7653,11 +8229,11 @@ export default function App() {
                     </div>
                     <div className="stat-chip-label">KPIs Assigned</div>
                   </div>
-                  <div className="stat-chip" onClick={() => setHrFilterPmsAudit("WEIGHT_MISMATCH")} style={{ cursor: "pointer" }}>
-                    <div className="stat-chip-value" style={{ color: weight100Count === totalEmps ? "#107c10" : "#ca5010" }}>
+                  <div className="stat-chip" onClick={() => setHrFilterPmsAudit("PENDING_WR_EVAL")} style={{ cursor: "pointer" }}>
+                    <div className="stat-chip-value" style={{ color: weight100Count === totalEmps ? "#107c10" : "#5c2d91" }}>
                       {weight100Count} / {totalEmps}
                     </div>
-                    <div className="stat-chip-label">Weight = 100% Balanced</div>
+                    <div className="stat-chip-label">Segment A Covered (80 pts)</div>
                   </div>
                   <div className="stat-chip" onClick={() => setHrFilterPmsAudit("PENDING_QUAL")} style={{ cursor: "pointer" }}>
                     <div className="stat-chip-value" style={{ color: qualEvalCount === totalEmps ? "#107c10" : "#038387" }}>
@@ -7710,8 +8286,8 @@ export default function App() {
                   <label>PMS Audit Filter</label>
                   <select value={hrFilterPmsAudit} onChange={(e) => setHrFilterPmsAudit(e.target.value)}>
                     <option value="ALL">All Accounts</option>
-                    <option value="MISSING_KPIS">Missing Quantitative KPIs (0 KPIs)</option>
-                    <option value="WEIGHT_MISMATCH">KPI Weight ≠ 100%</option>
+                    <option value="MISSING_KPIS">Work Report Only (0 KPIs Assigned)</option>
+                    <option value="PENDING_WR_EVAL">Pending Work Report Mark (Gap &gt; 0)</option>
                     <option value="PENDING_QUAL">Pending Qualitative Evaluation</option>
                     <option value="NEEDS_IMPROVEMENT">Needs Improvement (&lt; 50%)</option>
                   </select>
@@ -7736,10 +8312,14 @@ export default function App() {
                 if (hrFilterPmsAudit !== "ALL") {
                   if (u.role !== "employee") return false;
                   const kpis = u.kpis || [];
-                  const totalW = kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
                   const br = computeAppraisalBreakdown(u);
                   if (hrFilterPmsAudit === "MISSING_KPIS" && kpis.length > 0) return false;
-                  if (hrFilterPmsAudit === "WEIGHT_MISMATCH" && totalW === 100) return false;
+                  if (
+                    hrFilterPmsAudit === "PENDING_WR_EVAL" &&
+                    !(br.workReportMaxPoints > 0 && !br.isWorkReportEvaluated)
+                  ) {
+                    return false;
+                  }
                   if (hrFilterPmsAudit === "PENDING_QUAL" && br.isQualEvaluated) return false;
                   if (hrFilterPmsAudit === "NEEDS_IMPROVEMENT" && br.totalScore >= 50) return false;
                 }
@@ -7977,7 +8557,8 @@ export default function App() {
                 if (!currentProfile.kpis || currentProfile.kpis.length === 0) {
                   return (
                     <div className="alert alert-info" style={{ marginBottom: 0 }}>
-                      No Quantitative KPIs have been assigned to you yet. Please contact your Line Manager.
+                      No Quantitative KPIs have been assigned to you yet. Continue submitting your daily tasks under the{" "}
+                      <strong>Daily Work Report</strong> tab.
                     </div>
                   );
                 }

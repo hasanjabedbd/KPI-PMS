@@ -74,6 +74,15 @@ export interface QualitativeAssessment {
   acknowledgedAt?: string;
 }
 
+export interface WorkReportEvaluation {
+  score: number; // Marks awarded out of maxPoints (80 - kpiMaxPoints)
+  maxPoints?: number;
+  effectiveMonth: string; // YYYY-MM (e.g. "2026-10")
+  remarks?: string;
+  evaluatedBy?: string;
+  evaluatedAt?: string;
+}
+
 export interface UserProfile {
   _uid?: string;
   userId: string;
@@ -90,6 +99,8 @@ export interface UserProfile {
   kpis?: KpiItem[];
   qualitative?: QualitativeAssessment;
   qualitativeByMonth?: Record<string, QualitativeAssessment>;
+  workReportEval?: WorkReportEvaluation;
+  workReportEvalByMonth?: Record<string, WorkReportEvaluation>;
   lastUpdate?: string;
   createdAt?: string;
   authSecret?: string;
@@ -203,6 +214,42 @@ export interface AppraisalBreakdown {
   isQualEvaluated: boolean;
   mode: "competencies" | "direct";
   effectiveMonth?: string;
+  // Segment A breakdown: KPI marks (up to 80) + Work Report Evaluation gap (80 - kpiMaxPoints)
+  totalKpiWeight: number;
+  kpiMaxPoints: number;
+  kpiPoints: number;
+  kpiRawPct: number;
+  workReportMaxPoints: number;
+  workReportPoints: number;
+  isWorkReportEvaluated: boolean;
+  workReportRemarks?: string;
+  workReportEvaluatedBy?: string;
+  workReportEvaluatedAt?: string;
+}
+
+export function getEmployeeWorkReportEval(
+  u: UserProfile,
+  targetMonth?: string
+): WorkReportEvaluation | undefined {
+  const isMonthFiltered = Boolean(targetMonth && targetMonth !== "ALL" && targetMonth !== "all");
+  if (isMonthFiltered && targetMonth) {
+    if (u.workReportEvalByMonth?.[targetMonth]) {
+      return u.workReportEvalByMonth[targetMonth];
+    }
+    if (
+      u.workReportEval &&
+      (!u.workReportEval.effectiveMonth || u.workReportEval.effectiveMonth === targetMonth)
+    ) {
+      return u.workReportEval;
+    }
+    return undefined;
+  }
+  if (u.workReportEval) return u.workReportEval;
+  if (u.workReportEvalByMonth) {
+    const keys = Object.keys(u.workReportEvalByMonth).sort();
+    if (keys.length > 0) return u.workReportEvalByMonth[keys[keys.length - 1]];
+  }
+  return undefined;
 }
 
 export function filterKpisByEffectiveMonth(kpis: KpiItem[] | undefined, targetMonth?: string): KpiItem[] {
@@ -287,10 +334,39 @@ export function computeAppraisalBreakdown(u: UserProfile, targetMonth?: string):
       ? u.qualitativeByMonth[targetMonth]
       : u.qualitative;
 
-  const quantRawPct = weightedScore(activeKpis);
-  const qualRawPct = computeQualitativeRawPct(activeQual, targetMonth);
+  const totalKpiWeight = Number(
+    activeKpis.reduce((s, k) => s + (Number(k.weight) || 0), 0).toFixed(1)
+  );
+  const kpiMaxPoints = Math.min(quantWeight, totalKpiWeight);
+  const workReportMaxPoints = Math.max(0, Number((quantWeight - kpiMaxPoints).toFixed(1)));
 
-  const quantPoints = Number(((quantRawPct * quantWeight) / 100).toFixed(1));
+  const rawWeightedSum = activeKpis.reduce(
+    (s, k) => s + kpiPercent(k) * (Number(k.weight) || 0),
+    0
+  );
+  const kpiRawPct = totalKpiWeight > 0 ? Math.round(rawWeightedSum / totalKpiWeight) : 0;
+  const kpiPoints =
+    totalKpiWeight > 0
+      ? Number((((rawWeightedSum / totalKpiWeight) * kpiMaxPoints) / 100).toFixed(1))
+      : 0;
+
+  const activeWorkReportEval = getEmployeeWorkReportEval(u, targetMonth);
+  const isWorkReportEvaluated = Boolean(
+    workReportMaxPoints > 0 &&
+      activeWorkReportEval &&
+      typeof activeWorkReportEval.score === "number" &&
+      !Number.isNaN(activeWorkReportEval.score)
+  );
+  const workReportPoints = isWorkReportEvaluated
+    ? Number(
+        Math.max(0, Math.min(workReportMaxPoints, Number(activeWorkReportEval!.score) || 0)).toFixed(1)
+      )
+    : 0;
+
+  const quantPoints = Number((kpiPoints + workReportPoints).toFixed(1));
+  const quantRawPct = Math.round((quantPoints / quantWeight) * 100);
+
+  const qualRawPct = computeQualitativeRawPct(activeQual, targetMonth);
   const qualPoints = Number(((qualRawPct * qualWeight) / 100).toFixed(1));
   const totalScore = Math.round(quantPoints + qualPoints);
 
@@ -319,7 +395,17 @@ export function computeAppraisalBreakdown(u: UserProfile, targetMonth?: string):
     band: getPerformanceBand(totalScore),
     isQualEvaluated,
     mode: activeQual?.mode || "competencies",
-    effectiveMonth: targetMonth || activeQual?.effectiveMonth,
+    effectiveMonth: targetMonth || activeQual?.effectiveMonth || activeWorkReportEval?.effectiveMonth,
+    totalKpiWeight,
+    kpiMaxPoints,
+    kpiPoints,
+    kpiRawPct,
+    workReportMaxPoints,
+    workReportPoints,
+    isWorkReportEvaluated,
+    workReportRemarks: activeWorkReportEval?.remarks,
+    workReportEvaluatedBy: activeWorkReportEval?.evaluatedBy,
+    workReportEvaluatedAt: activeWorkReportEval?.evaluatedAt,
   };
 }
 
@@ -369,6 +455,12 @@ export interface YearlyMonthRow {
   kpiCount: number;
   quantPoints: number;
   quantRawPct: number;
+  kpiPoints: number;
+  kpiMaxPoints: number;
+  kpiRawPct: number;
+  workReportPoints: number;
+  workReportMaxPoints: number;
+  isWorkReportEvaluated: boolean;
   qualPoints: number;
   qualRawPct: number;
   selfQualRawPct: number;
@@ -391,6 +483,11 @@ export interface YearlyAppraisalSummary {
   avgQuantPoints: number;
   avgQualPoints: number;
   avgQuantRawPct: number;
+  avgKpiPoints: number;
+  avgKpiMaxPoints: number;
+  avgKpiRawPct: number;
+  avgWorkReportPoints: number;
+  avgWorkReportMaxPoints: number;
   avgQualRawPct: number;
   avgSelfQualRawPct: number;
   avgTotalScore: number;
@@ -413,6 +510,9 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
     const qualForMonth =
       u.qualitativeByMonth?.[monthKey] ||
       (u.qualitative?.effectiveMonth === monthKey ? u.qualitative : undefined);
+    const wrEvalForMonth =
+      u.workReportEvalByMonth?.[monthKey] ||
+      (u.workReportEval?.effectiveMonth === monthKey ? u.workReportEval : undefined);
 
     const hasQualActivity = Boolean(
       qualForMonth &&
@@ -426,8 +526,13 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
           qualForMonth.workflowStatus === "manager_reviewed" ||
           qualForMonth.workflowStatus === "self_submitted")
     );
+    const hasWorkReportEval = Boolean(
+      wrEvalForMonth &&
+        typeof wrEvalForMonth.score === "number" &&
+        !Number.isNaN(wrEvalForMonth.score)
+    );
 
-    const hasMonthData = monthSpecificKpis.length > 0 || hasQualActivity;
+    const hasMonthData = monthSpecificKpis.length > 0 || hasQualActivity || hasWorkReportEval;
 
     const br = computeAppraisalBreakdown(u, monthKey);
     const selfStats = computeSelfAssessmentStats(qualForMonth || u.qualitative, monthKey);
@@ -443,6 +548,12 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
       kpiCount: monthSpecificKpis.length || (hasMonthData ? ongoingKpis.length : 0),
       quantPoints: hasMonthData ? br.quantPoints : 0,
       quantRawPct: hasMonthData ? br.quantRawPct : 0,
+      kpiPoints: hasMonthData ? br.kpiPoints : 0,
+      kpiMaxPoints: hasMonthData ? br.kpiMaxPoints : 0,
+      kpiRawPct: hasMonthData ? br.kpiRawPct : 0,
+      workReportPoints: hasMonthData ? br.workReportPoints : 0,
+      workReportMaxPoints: hasMonthData ? br.workReportMaxPoints : 0,
+      isWorkReportEvaluated: hasMonthData && br.isWorkReportEvaluated,
       qualPoints: hasMonthData ? br.qualPoints : 0,
       qualRawPct: hasMonthData ? br.qualRawPct : 0,
       selfQualRawPct: selfStats.selfRawPct,
@@ -460,10 +571,14 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
 
   let evaluatedRows = months.filter((r) => r.hasEvaluation);
 
-  if (evaluatedRows.length === 0 && (allKpis.length > 0 || u.qualitative)) {
+  if (evaluatedRows.length === 0 && (allKpis.length > 0 || u.qualitative || u.workReportEval)) {
     const fallbackBr = computeAppraisalBreakdown(u);
     const fallbackSelf = computeSelfAssessmentStats(u.qualitative);
-    const defaultM = (u.qualitative?.effectiveMonth || today().slice(0, 7)).slice(5, 7);
+    const defaultM = (
+      u.qualitative?.effectiveMonth ||
+      u.workReportEval?.effectiveMonth ||
+      today().slice(0, 7)
+    ).slice(5, 7);
     const idx = Math.max(0, Math.min(11, (Number(defaultM) || 1) - 1));
     const finalized = u.qualitative?.workflowStatus === "hr_approved";
     months[idx] = {
@@ -473,6 +588,12 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
       kpiCount: allKpis.length,
       quantPoints: fallbackBr.quantPoints,
       quantRawPct: fallbackBr.quantRawPct,
+      kpiPoints: fallbackBr.kpiPoints,
+      kpiMaxPoints: fallbackBr.kpiMaxPoints,
+      kpiRawPct: fallbackBr.kpiRawPct,
+      workReportPoints: fallbackBr.workReportPoints,
+      workReportMaxPoints: fallbackBr.workReportMaxPoints,
+      isWorkReportEvaluated: fallbackBr.isWorkReportEvaluated,
       qualPoints: fallbackBr.qualPoints,
       qualRawPct: fallbackBr.qualRawPct,
       selfQualRawPct: fallbackSelf.selfRawPct,
@@ -510,6 +631,29 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
   const avgTotalScore = count > 0 ? Math.round(avgQuantPoints + avgQualPoints) : 0;
   const avgQuantRawPct = Math.round((avgQuantPoints / 80) * 100);
   const avgQualRawPct = Math.round((avgQualPoints / 20) * 100);
+
+  const kpiRows = evaluatedRows.filter((r) => r.kpiMaxPoints > 0);
+  const avgKpiPoints =
+    kpiRows.length > 0
+      ? Number((kpiRows.reduce((s, r) => s + r.kpiPoints, 0) / kpiRows.length).toFixed(1))
+      : 0;
+  const avgKpiMaxPoints =
+    kpiRows.length > 0
+      ? Number((kpiRows.reduce((s, r) => s + r.kpiMaxPoints, 0) / kpiRows.length).toFixed(1))
+      : 0;
+  const avgKpiRawPct =
+    kpiRows.length > 0
+      ? Math.round(kpiRows.reduce((s, r) => s + r.kpiRawPct, 0) / kpiRows.length)
+      : 0;
+  const avgWorkReportPoints =
+    count > 0
+      ? Number((evaluatedRows.reduce((s, r) => s + r.workReportPoints, 0) / count).toFixed(1))
+      : 0;
+  const avgWorkReportMaxPoints =
+    count > 0
+      ? Number((evaluatedRows.reduce((s, r) => s + r.workReportMaxPoints, 0) / count).toFixed(1))
+      : 0;
+
   const selfRatedMonths = evaluatedRows.filter((r) => r.selfRatedCount > 0);
   const avgSelfQualRawPct =
     selfRatedMonths.length > 0
@@ -524,6 +668,11 @@ export function computeYearlyAppraisalSummary(u: UserProfile, yearStr?: string):
     avgQuantPoints,
     avgQualPoints,
     avgQuantRawPct,
+    avgKpiPoints,
+    avgKpiMaxPoints,
+    avgKpiRawPct,
+    avgWorkReportPoints,
+    avgWorkReportMaxPoints,
     avgQualRawPct,
     avgSelfQualRawPct,
     avgTotalScore,
